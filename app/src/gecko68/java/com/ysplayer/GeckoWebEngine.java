@@ -327,14 +327,20 @@ public class GeckoWebEngine implements WebEngine {
 
     private void hideGeckoView() {
         if (mSession == null || mGeckoView == null) return;
-        LogUtil.i(TAG + ": hiding GeckoView (mode switch)");
+        LogUtil.i(TAG + ": closing GeckoView session (mode switch)");
         mStopExpected = true;
         try {
             mSession.stop();
-            mSession.loadUri("about:blank");
         } catch (Exception ignored) {}
-        mGeckoView.setVisibility(View.INVISIBLE);
-        muteGeckoVideo();
+        mStopExpected = true;
+        try {
+            mSession.close();
+        } catch (Exception ignored) {}
+        try {
+            mContainer.removeView(mGeckoView);
+        } catch (Exception ignored) {}
+        mSession = null;
+        mGeckoView = null;
     }
 
     private void showGeckoView() {
