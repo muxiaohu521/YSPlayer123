@@ -1,0 +1,424 @@
+plugins {
+    id 'com.android.application'
+}
+
+def androidApi = 19
+def targetSdkApi = 33
+try {
+    if (project.hasProperty('androidApi')) {
+        androidApi = Integer.parseInt(project.property('androidApi').toString())
+    }
+    // -PtargetSdkVersion 由 GUI 端根据内核类型计算后传入(优先级最高)
+    if (project.hasProperty('targetSdkVersion')) {
+        targetSdkApi = Integer.parseInt(project.property('targetSdkVersion').toString())
+    } else if (project.hasProperty('compileSdkVersion')) {
+        targetSdkApi = Integer.parseInt(project.property('compileSdkVersion').toString())
+        // 全局硬上限 33: 可避免触发 API 34 原生库安全策略
+        if (targetSdkApi > 33) targetSdkApi = 33
+    }
+} catch (Exception ignored) {
+    androidApi = 19
+    targetSdkApi = 33
+}
+
+// ---- 项目级参数: minSdk 来自 -PandroidApi(用户选择), targetSdk 来自 -PcompileSdkVersion(工具链) ----
+// ---- KERNELS 仅用于 GUI 过滤 + CLI 校验，不参与打包的 minSdk/targetSdk ----
+project.ext.KERNELS = [
+    'crosswalk': [minSdk: 19, maxSdk: 25],
+    'x5':       [minSdk: 19, maxSdk: 33],
+    'gecko68':  [minSdk: 19, maxSdk: 28],
+    'system':   [minSdk: 19, maxSdk: 33],
+]
+
+android {
+    namespace 'com.ysplayer'
+    compileSdk project.findProperty('compileSdkVersion')?.toInteger() ?: 33
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    defaultConfig {
+        applicationId "com.ysplayer"
+        minSdkVersion androidApi
+        targetSdkVersion targetSdkApi
+        versionName "1.5.0"
+        // versionCode: 主版本×1亿 + 秒级时间戳后8位; 新版本永远大于旧版本, 同版本新构建可覆盖旧构建
+        versionCode versionName.split("\\.")[0].toInteger() * 100_000_000
+                + (int)(System.currentTimeMillis() / 1000) % 100_000_000
+
+        multiDexEnabled true
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField "String", "BUILD_TIME", "\"${new Date().format('yyyy-MM-dd HH:mm:ss')}\""
+        buildConfigField "String", "BUILD_ARCH", "\"${getArch()}\""
+        buildConfigField "String", "BUILD_KERNEL", "\"${getKernel()}\""
+        buildConfigField "String", "GRAPHICS_API", "\"auto\""
+        buildConfigField "int", "GLES_VERSION", "0"
+        buildConfigField "int", "GLES_MINOR_VERSION", "0"
+    }
+
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+        release {
+            // 独立 release 签名，与 debug 完全隔离；设环境变量可覆盖
+            storeFile file(System.getenv('RELEASE_KEYSTORE') ?: rootProject.file('release.keystore'))
+            storePassword System.getenv('RELEASE_KEYSTORE_PASSWORD') ?: 'release123'
+            keyAlias System.getenv('RELEASE_KEY_ALIAS') ?: 'ysplayer_release'
+            keyPassword System.getenv('RELEASE_KEY_PASSWORD') ?: 'release123'
+        }
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+            buildConfigField "boolean", "LOG_ENABLED", "true"
+        }
+        release {
+            debuggable false
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+            buildConfigField "boolean", "LOG_ENABLED", "false"
+        }
+    }
+
+    lintOptions {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    
+
+    flavorDimensions "arch", "kernel"
+
+    productFlavors {
+        // ===== CPU架构维度: ARM32 / ARM64 / X86 / X86_64 =====
+        // minSdkVersion 统一由 defaultConfig 中 -PandroidApi 控制，不在 flavor 中硬编码
+        arm32 {
+            dimension "arch"
+            ndk { abiFilters 'armeabi-v7a' }
+            buildConfigField "String", "CPU_ARCH", "\"armeabi-v7a\""
+        }
+        arm64 {
+            dimension "arch"
+            ndk { abiFilters 'arm64-v8a' }
+            buildConfigField "String", "CPU_ARCH", "\"arm64-v8a\""
+        }
+        x86 {
+            dimension "arch"
+            ndk { abiFilters 'x86' }
+            buildConfigField "String", "CPU_ARCH", "\"x86\""
+        }
+        x8664 {
+            dimension "arch"
+            ndk { abiFilters 'x86_64' }
+            buildConfigField "String", "CPU_ARCH", "\"x86_64\""
+        }
+
+        // ===== 浏览器内核维度: Crosswalk / X5 / Gecko68 / System =====
+        // minSdkVersion 由 defaultConfig 中 -PandroidApi(用户选择) 统一控制
+        // maxSdkVersion 保留: crosswalk 不支持 API 26+，gecko68 不支持 API 29+
+        crosswalk {
+            dimension "kernel"
+            maxSdkVersion 25
+            buildConfigField "String", "ENGINE_TYPE", "\"crosswalk\""
+            buildConfigField "String", "KERNEL_VERSION", "\"23.53.589.4\""
+        }
+        x5 {
+            dimension "kernel"
+            maxSdkVersion 33
+            buildConfigField "String", "ENGINE_TYPE", "\"x5\""
+            buildConfigField "String", "KERNEL_VERSION", "\"46514\""
+        }
+        gecko68 {
+            dimension "kernel"
+            maxSdkVersion 28
+            buildConfigField "String", "ENGINE_TYPE", "\"gecko68\""
+            buildConfigField "String", "KERNEL_VERSION", "\"68\""
+        }
+        system {
+            dimension "kernel"
+            maxSdkVersion 33
+            buildConfigField "String", "ENGINE_TYPE", "\"system\""
+            buildConfigField "String", "KERNEL_VERSION", "\"sys\""
+        }
+    }
+
+    // X5 内核支持 ARM 32-bit (armeabi-v7a) 和 ARM 64-bit (arm64-v8a)
+    // X5 不支持 x86 / x86_64
+    variantFilter { variant ->
+        def flavors = variant.flavors*.name
+        if (flavors.contains('x5') && (!flavors.contains('arm32') && !flavors.contains('arm64'))) {
+            setIgnore(true)
+        }
+    }
+
+    sourceSets {
+        crosswalk {
+            java.srcDirs = ['src/crosswalk/java', 'src/ijk/java']
+        }
+        x5 {
+            java.srcDirs = ['src/x5/java', 'src/ijk/java']
+        }
+        gecko68 {
+            java.srcDirs = ['src/gecko68/java', 'src/ijk/java']
+        }
+        system {
+            java.srcDirs = ['src/system/java', 'src/ijk/java']
+        }
+    }
+
+    applicationVariants.all { variant ->
+        def archFlavor = variant.productFlavors.find { it.dimension == 'arch' }
+        def kernelFlavor = variant.productFlavors.find { it.dimension == 'kernel' }
+
+        def kernelLabel = kernelFlavor ? kernelFlavor.name.toUpperCase() : 'SYSTEM'
+        def archLabel = archFlavor ? archFlavor.name : 'arm32'
+
+        variant.outputs.all { output ->
+            output.outputFileName = "YSPlayer_${kernelLabel}_${variant.buildType.name}-${archLabel}.apk"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.toVersion(project.findProperty('javaVersion') ?: "11")
+        targetCompatibility JavaVersion.toVersion(project.findProperty('javaVersion') ?: "11")
+    }
+}
+
+// ============================================================
+// 智能 R8 策略: GeckoView 内核禁用 minification, System 内核保留
+// GeckoView AAR 含 JNI native 引用 + Manifest Service 声明,
+// R8 裁剪风险高且收益极低 (AAR 已预编译优化, 仅省 2~5% 体积)
+// ============================================================
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { variantBuilder ->
+        def kernelFlavor = variantBuilder.productFlavors.find {
+            it.first == 'kernel'
+        }
+        def isNativeKernel = kernelFlavor && kernelFlavor.second != 'system'
+        if (isNativeKernel) {
+            variantBuilder.minifyEnabled = false
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.multidex:multidex:2.0.1'
+
+    // TBS X5 SDK v4.3.0.326 — 架构无关的 SDK 类库（TBS 内核 APK 由 src/arm32X5/ 和 src/arm64X5/ 分别提供）
+    x5Implementation 'com.tencent.smtt:x5_core:46514'
+
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.recyclerview:recyclerview:1.3.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'com.google.android.material:material:1.9.0'
+
+    // ijkplayer (外部共享 IJK 模式: Crosswalk/X5/Gecko68)
+    // Gecko 内核内置 geckoview-ijkplayer，System 不支持 IJK，二者不打包
+
+
+    // GeckoView 68 分架构 AAR — 保持 empty，由 afterEvaluate 动态注入 (避免多 ABI manifest 合并)
+
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+}
+
+// 辅助方法: 从 gradle 任务名解析当前 arch
+def getArch() {
+    def taskNames = gradle.startParameter.taskNames
+    for (name in taskNames) {
+        if (name.contains('Arm32')) return 'arm32'
+        if (name.contains('Arm64')) return 'arm64'
+        if (name.contains('X8664')) return 'x86_64'
+        if (name.contains('X86')) return 'x86'
+    }
+    return 'universal'
+}
+
+def getKernel() {
+    def taskNames = gradle.startParameter.taskNames
+    for (name in taskNames) {
+        if (name.contains('Crosswalk')) return 'crosswalk'
+        if (name.contains('X5')) return 'x5'
+        if (name.contains('Gecko68')) return 'gecko68'
+        if (name.contains('System')) return 'system'
+    }
+    return 'unknown'
+}
+
+// ============================================================
+// CLI 构建任务 —— gradlew.bat 命令行入口
+// 用法: gradlew.bat customBuild -Papi=21 -Pkernel=gecko68 -Parch=arm32 [-PbuildType=release] [-Pclean]
+// 与 build_gui.py GUI 模式完全独立，通过 -P 参数指定构建组合
+// ============================================================
+
+project.afterEvaluate {
+
+    // ============================================================
+    // 动态依赖注入: Crosswalk/gecko68 按架构精确匹配 ABI AAR
+    // 避免多 ABI 库 manifest 合并时 minSdk 版本冲突
+    // ============================================================
+    def kernelAbiMap = [
+        'crosswalk': [
+            'arm32': 'org.xwalk:xwalk_core_library_arm32:23.53.589.4',
+            'arm64': 'org.xwalk:xwalk_core_library_arm64:23.53.589.4',
+            'x86':   'org.xwalk:xwalk_core_library_x86:23.53.589.4',
+            'x8664': 'org.xwalk:xwalk_core_library_x86_64:23.53.589.4',
+        ],
+        'gecko68': [
+            'arm32': 'org.mozilla.geckoview:geckoview-armeabi-v7a:68.0.20190711090008',
+            'arm64': 'org.mozilla.geckoview:geckoview-arm64-v8a:68.0.20190711090008',
+            'x86':   'org.mozilla.geckoview:geckoview-x86:68.0.20190711090008',
+            'x8664': 'org.mozilla.geckoview:geckoview-x86_64:68.0.20190711090008',
+        ],
+    ]
+
+    android.applicationVariants.all { variant ->
+        def kernelName = variant.productFlavors.find { it.dimension == 'kernel' }?.name
+        def archName = variant.productFlavors.find { it.dimension == 'arch' }?.name
+
+        def depNotation = kernelAbiMap[kernelName]?.get(archName)
+        if (depNotation) {
+            project.configurations.getByName("${variant.name}Implementation").dependencies.add(
+                project.dependencies.create(depNotation) {
+                    exclude group: 'com.android.support'
+                    exclude group: 'org.mozilla.geckoview', module: 'geckoview-exoplayer2'
+                    exclude group: 'androidx.core', module: 'core-ktx'
+                    exclude group: 'androidx.core', module: 'core'
+                    exclude group: 'com.google.android.gms'
+                }
+            )
+        }
+    }
+
+    // ============================================================
+    // X5 内核预解压: 构建时把内核APK解压到 assets/x5core/
+    // 运行时直接文件复制，无需 zip 解压，兼容阉割版TV盒子
+    // ============================================================
+    def x5KernelMap = [
+        'arm32': [apk: 'src/arm32X5/kernel/tbs_46514_32bit_patched_sign.apk', ver: 46514],
+        'arm64': [apk: 'src/arm64X5/kernel/tbs_46515_64bit_patched_sign.apk', ver: 46515],
+    ]
+
+    android.applicationVariants.all { variant ->
+        def kernelFlavor = variant.productFlavors.find { it.dimension == 'kernel' }
+        if (kernelFlavor?.name != 'x5') return
+        def archFlavor = variant.productFlavors.find { it.dimension == 'arch' }
+        def kcfg = x5KernelMap[archFlavor?.name]
+        if (!kcfg) return
+
+        def outputDir = file("$buildDir/generated/x5core_assets/${archFlavor.name}/x5core")
+
+        def extractTask = tasks.register("extractX5Kernel_${variant.name}") {
+            def apkFile = file(kcfg.apk)
+            inputs.file(apkFile)
+            outputs.dir(outputDir)
+
+            doLast {
+                delete outputDir
+                outputDir.mkdirs()
+                def fileList = []
+                zipTree(apkFile).visit { details ->
+                    if (details.directory) return
+                    def relPath = details.relativePath.pathString
+                    def name = details.name
+                    if ((relPath.startsWith('lib/') && name.endsWith('.so')) ||
+                        relPath.startsWith('assets/webkit/')) {
+                        def dest = new File(outputDir, name)
+                        dest.bytes = details.file.bytes
+                        fileList << name
+                    }
+                }
+                fileList.sort()
+                new File(outputDir, 'files.txt').text = fileList.join('\n')
+                new File(outputDir, 'version.txt').text = String.valueOf(kcfg.ver)
+                logger.lifecycle("X5 kernel pre-extracted: ${fileList.size()} files v${kcfg.ver} -> ${outputDir}")
+            }
+        }
+
+        // 注入到 assets 合并流程
+        variant.mergeAssetsProvider.configure { dependsOn extractTask }
+    }
+
+    // 配置生成资产目录
+    android.sourceSets {
+        arm32X5 { assets.srcDirs += "$buildDir/generated/x5core_assets/arm32" }
+        arm64X5 { assets.srcDirs += "$buildDir/generated/x5core_assets/arm64" }
+    }
+
+    def cliKernel = project.findProperty('kernel')
+    def cliArch = project.findProperty('arch')
+
+    def hasCliParams = cliKernel || cliArch
+    if (!hasCliParams) return
+
+    def missing = []
+    if (!cliKernel) missing << 'kernel'
+    if (!cliArch)   missing << 'arch'
+    if (missing) {
+        throw new GradleException(
+            "CLI 构建模式缺少参数: ${missing.join(', ')}\n" +
+            "用法: gradlew.bat customBuild -Papi=<N> -Pkernel=<name> -Parch=<name> [-PbuildType=release|debug] [-Pclean]")
+    }
+
+    def VARIANTS = [
+        'arm32': [minSdk: 19],
+        'arm64': [minSdk: 21],
+        'x86':   [minSdk: 19],
+        'x8664': [minSdk: 21],
+    ]
+    def v = VARIANTS; def k = project.ext.KERNELS
+    def errors = []
+
+    if (!v.containsKey(cliArch))   errors << "无效架构 '${cliArch}'，可选: ${v.keySet()}"
+    if (!k.containsKey(cliKernel))  errors << "无效内核 '${cliKernel}'，可选: ${k.keySet()}"
+    if (errors) throw new GradleException(errors.join('\n'))
+
+    def api = project.findProperty('api')?.toInteger() ?: 21
+    def buildType = project.findProperty('buildType') ?: 'release'
+    def doClean = project.findProperty('clean') != null
+
+    def va = v[cliArch]; def ke = k[cliKernel]
+
+    if (api < va.minSdk) errors << "架构 '${cliArch}' 需要 minSdk ${va.minSdk}，当前 API ${api} 不满足"
+    if (api < ke.minSdk)  errors << "内核 '${cliKernel}' 需要 minSdk ${ke.minSdk}，当前 API ${api} 不满足"
+    if (api > ke.maxSdk)  errors << "内核 '${cliKernel}' 最高支持 maxSdk ${ke.maxSdk}，当前 API ${api} 超出"
+
+    if (errors) throw new GradleException(errors.join('\n'))
+
+    def taskName = "assemble${cliArch.capitalize()}${cliKernel.capitalize()}${buildType.capitalize()}"
+
+    tasks.register('customBuild') {
+        group = 'build'
+        description = "CLI 构建: api=${api} arch=${cliArch} kernel=${cliKernel} type=${buildType}"
+
+        doFirst {
+            println "=" * 60
+            println "  YSPlayer CLI 构建 (命令行模式)"
+            println "  API:     ${api}"
+            println "  架构:    ${cliArch}"
+            println "  内核:    ${cliKernel}"
+            println "  类型:    ${buildType}"
+            println "  清理:    ${doClean}"
+            println "  Gradle:  ${taskName}"
+            println "=" * 60
+        }
+
+        if (doClean) {
+            dependsOn 'clean'
+            tasks.findByName(taskName)?.mustRunAfter('clean')
+        }
+        dependsOn taskName
+    }
+}

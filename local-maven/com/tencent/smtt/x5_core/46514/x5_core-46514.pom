@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.tencent.smtt</groupId>
+  <artifactId>x5_core</artifactId>
+  <version>46514</version>
+  <packaging>aar</packaging>
+  <name>X5 Core SDK</name>
+  <description>Tencent TBS X5 Browser SDK v4.3.0.326 — architecture-independent SDK classes (TBS kernel APKs managed separately via assets)</description>
+  <url>https://x5.tencent.com/</url>
+</project>

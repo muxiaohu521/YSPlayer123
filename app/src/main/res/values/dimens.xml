@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="channel_panel_width">280dp</dimen>
+    <dimen name="settings_panel_width">420dp</dimen>
+    <dimen name="panel_header_height">48dp</dimen>
+    <dimen name="bottom_bar_height">48dp</dimen>
+    <dimen name="panel_text_size">18sp</dimen>
+    <dimen name="bar_text_size">16sp</dimen>
+    <dimen name="route_item_padding">12dp</dimen>
+</resources>

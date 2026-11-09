@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.mozilla.geckoview</groupId>
+  <artifactId>geckoview-x86_64</artifactId>
+  <version>68.0.20190711090008</version>
+  <packaging>aar</packaging>
+  <url>https://wiki.mozilla.org/Mobile/GeckoView</url>
+  <licenses>
+    <license>
+      <name>The Mozilla Public License, v. 2.0</name>
+      <url>http://mozilla.org/MPL/2.0/</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+  <scm>
+    <connection>scm::hg::https://hg.mozilla.org/mozilla-central/</connection>
+    <url>https://hg.mozilla.org/mozilla-central/</url>
+  </scm>
+  <dependencies>
+    <dependency>
+      <groupId>com.android.support</groupId>
+      <artifactId>support-v4</artifactId>
+      <version>28.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.android.support</groupId>
+      <artifactId>palette-v7</artifactId>
+      <version>28.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.yaml</groupId>
+      <artifactId>snakeyaml</artifactId>
+      <version>1.24</version>
+    </dependency>
+    <dependency>
+      <groupId>android.arch.lifecycle</groupId>
+      <artifactId>extensions</artifactId>
+      <version>1.1.1</version>
+    </dependency>
+    <dependency>
+      <groupId>android.arch.lifecycle</groupId>
+      <artifactId>common-java8</artifactId>
+      <version>1.1.1</version>
+    </dependency>
+  </dependencies>
+</project>
