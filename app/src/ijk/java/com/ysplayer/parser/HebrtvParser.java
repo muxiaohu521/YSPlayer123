@@ -65,6 +65,12 @@ public class HebrtvParser extends BaseParser {
     }
 
     @Override
+    public void clearCache() {
+        sChannelList = null;
+        sChannelExpiresAt = 0;
+    }
+
+    @Override
     public boolean canParse(String url) {
         return url != null && url.contains(DOMAIN);
     }

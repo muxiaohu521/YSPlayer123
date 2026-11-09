@@ -70,6 +70,9 @@ public class JxntvParser extends BaseParser {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     @Override public String getName() { return "江西网络广播电视台"; }
+
+    @Override public void clearCache() { sCache.clear(); }
+
     @Override public boolean canParse(String url) { return url != null && url.contains(DOMAIN); }
 
     @Override

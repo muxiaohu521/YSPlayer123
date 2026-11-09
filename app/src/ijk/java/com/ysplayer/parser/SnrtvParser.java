@@ -36,6 +36,13 @@ public class SnrtvParser extends BaseParser {
     }
 
     @Override
+    public void clearCache() {
+        sCatalogCache = null;
+        sCatalogRefreshAt = 0;
+        sCatalogHardExpiresAt = 0;
+    }
+
+    @Override
     public boolean canParse(String url) {
         return url != null && url.contains(DOMAIN);
     }

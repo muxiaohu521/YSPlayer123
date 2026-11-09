@@ -68,6 +68,9 @@ public class HnntvParser extends BaseParser {
     private static final Map<String, Object> sLocks = new HashMap<>();
 
     @Override public String getName() { return "海南网络广播电视台"; }
+
+    @Override public void clearCache() { sCache.clear(); }
+
     @Override public boolean canParse(String url) { return url != null && url.contains(DOMAIN); }
 
     @Override

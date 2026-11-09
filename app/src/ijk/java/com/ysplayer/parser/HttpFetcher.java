@@ -48,6 +48,8 @@ public final class HttpFetcher {
             conn.setRequestProperty("Accept",
                     "text/html,application/xhtml+xml,application/json,application/xml;q=0.9,*/*;q=0.8");
             conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+            conn.setRequestProperty("Cache-Control", "no-cache, no-store");
+            conn.setRequestProperty("Pragma", "no-cache");
 
             if (headers != null) {
                 for (Map.Entry<String, String> e : headers.entrySet()) {

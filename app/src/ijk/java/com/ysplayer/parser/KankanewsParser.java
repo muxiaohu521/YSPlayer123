@@ -85,6 +85,7 @@ public class KankanewsParser extends BaseParser {
     private static String sDeviceUuid;
 
     @Override public String getName() { return "看看新闻(SMG)"; }
+    @Override public void clearCache() { sDetailCache.clear(); sProxies.clear(); }
     @Override public boolean canParse(String url) { return url != null && url.contains(DOMAIN); }
 
     @Override

@@ -17,6 +17,9 @@ import org.mozilla.geckoview.GeckoSessionSettings;
 import org.mozilla.geckoview.GeckoView;
 import org.mozilla.geckoview.WebExtension;
 
+import java.io.File;
+import java.net.InetAddress;
+
 public class GeckoWebEngine implements WebEngine {
 
     private static final String TAG = "GeckoWebEngine68";
@@ -552,6 +555,7 @@ public class GeckoWebEngine implements WebEngine {
     public void stopLoading() {
         cancelPendingRetry();
         ++mParseGeneration;
+        clearAllCaches();
         if (mIjkPlayer != null) {
             mIjkPlayer.stop();
         }
@@ -567,6 +571,9 @@ public class GeckoWebEngine implements WebEngine {
 
     @Override
     public void reload() {
+        cancelPendingRetry();
+        ++mParseGeneration;
+        clearAllCaches();
         if (mHardActive) {
             mHardMgr.reload();
             return;
@@ -584,7 +591,9 @@ public class GeckoWebEngine implements WebEngine {
 
     @Override
     public void setUaMode(int mode) {
+        if (mode == mUaMode) return;
         mUaMode = mode;
+        clearAllCaches();
         mHardMgr.setUaMode(mode);
         if (mSession != null) {
             applyUa(mSession);
@@ -604,6 +613,7 @@ public class GeckoWebEngine implements WebEngine {
         if (mode == mDecodingMode) return;
         cancelPendingRetry();
         ++mParseGeneration;
+        clearAllCaches();
         mDecodingMode = mode;
         switch (mode) {
             case DECODING_MODE_HARD:
@@ -647,6 +657,66 @@ public class GeckoWebEngine implements WebEngine {
             mIjkPlayer = null;
         }
         mIjkActive = false;
+    }
+
+    private void clearAllCaches() {
+        try {
+            ParserManager.getInstance().clearAllCaches();
+            LogUtil.d(TAG + ": parser caches cleared");
+        } catch (Exception e) {
+            LogUtil.w(TAG + ": failed to clear parser caches: " + e.getMessage());
+        }
+
+        try {
+            if (mContainer != null) {
+                Context ctx = mContainer.getContext();
+                if (ctx != null) {
+                    String[] geckoDirs = {
+                            "app_gecko_cache",
+                            "app_webview",
+                            "gecko"
+                    };
+                    File dataDir = ctx.getCacheDir().getParentFile();
+                    if (dataDir != null) {
+                        for (String dir : geckoDirs) {
+                            File geckoCache = new File(dataDir, dir);
+                            if (geckoCache.exists()) {
+                                deleteRecursive(geckoCache);
+                                LogUtil.d(TAG + ": deleted Gecko cache dir: " + geckoCache.getAbsolutePath());
+                            }
+                        }
+                    }
+
+                    ctx.deleteDatabase("gecko-cookies.sqlite");
+                }
+            }
+        } catch (Exception e) {
+            LogUtil.w(TAG + ": failed to clear gecko caches: " + e.getMessage());
+        }
+
+        try {
+            java.lang.reflect.Field cacheField = InetAddress.class.getDeclaredField("addressCache");
+            cacheField.setAccessible(true);
+            Object cache = cacheField.get(null);
+            if (cache instanceof java.util.Map) {
+                ((java.util.Map<?, ?>) cache).clear();
+                LogUtil.d(TAG + ": DNS cache cleared");
+            }
+        } catch (Exception e) {
+            LogUtil.d(TAG + ": DNS cache clear skipped (Android " + android.os.Build.VERSION.SDK_INT + ")");
+        }
+    }
+
+    private static void deleteRecursive(File file) {
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursive(child);
+                }
+            }
+        }
+        file.delete();
     }
 
     @Override

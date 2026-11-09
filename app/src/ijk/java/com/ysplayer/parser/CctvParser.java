@@ -42,6 +42,16 @@ public class CctvParser extends BaseParser {
     private static volatile long sChannelCacheTimestamp;
     private static final Object sChannelLock = new Object();
 
+    public static void resetCaches() {
+        synchronized (sChannelLock) {
+            sChannelUrlCache = null;
+            sChannelCacheTimestamp = 0;
+        }
+        sCachedAesKey = null;
+        sCachedAesIv = null;
+        sKeyCacheTimestamp = 0;
+    }
+
     private static final Pattern LIVEPLAYER_KEY_PATTERN =
             Pattern.compile("[\"']([A-Za-z0-9+/]{43}=)[\"']");
     private static final Pattern LIVEPLAYER_IV_PATTERN =
@@ -135,6 +145,11 @@ public class CctvParser extends BaseParser {
     @Override
     public String getName() {
         return "央视网";
+    }
+
+    @Override
+    public void clearCache() {
+        resetCaches();
     }
 
     @Override

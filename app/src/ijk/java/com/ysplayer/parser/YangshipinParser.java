@@ -1216,6 +1216,14 @@ public final class YangshipinParser extends BaseParser {
     }
 
     @Override
+    public void clearCache() {
+        sUrlCache.clear();
+        sJceDeadCache.clear();
+        sPidToChannelId = null;
+        sCapiCacheTimestamp = 0;
+    }
+
+    @Override
     public boolean canParse(String url) {
         if (url == null) return false;
         return url.contains("yangshipin.cn/tv/home?pid=");

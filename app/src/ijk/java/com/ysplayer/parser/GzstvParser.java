@@ -87,6 +87,9 @@ public class GzstvParser extends BaseParser {
     public String getName() { return "贵州网络广播电视台"; }
 
     @Override
+    public void clearCache() { clearTokenCache(); }
+
+    @Override
     public boolean canParse(String url) { return url != null && url.contains(DOMAIN); }
 
     @Override

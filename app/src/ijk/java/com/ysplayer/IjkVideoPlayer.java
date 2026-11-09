@@ -5,6 +5,8 @@ import android.graphics.Color;
 import android.graphics.SurfaceTexture;
 import android.media.AudioManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.Surface;
 import android.view.TextureView;
@@ -33,6 +35,10 @@ public class IjkVideoPlayer implements IVideoPlayer {
     public static final int STATE_ENDED = 3;
     public static final int STATE_ERROR = 4;
 
+    private static final int BUFFERING_THRESHOLD = 3;
+    private static final long BUFFERING_WINDOW_MS = 30000;
+    private static final long RECOVERY_CHECK_MS = 60000;
+
     private final Context mContext;
     private final ViewGroup mParentContainer;
     private final Callback mCallback;
@@ -50,6 +56,11 @@ public class IjkVideoPlayer implements IVideoPlayer {
     private Map<String, String> mCurrentHeaders;
     private String mUserAgent;
     private int mPlayerState = STATE_IDLE;
+
+    private int mBufferingCount;
+    private long mBufferingWindowStart;
+    private boolean mFastDecodeMode;
+    private final Handler mHandler = new Handler(Looper.getMainLooper());
 
     private static boolean sIjkLoaded = false;
 
@@ -81,6 +92,11 @@ public class IjkVideoPlayer implements IVideoPlayer {
         } else {
             LogUtil.i("IJK_PLAY: >>> HEADERS = null");
         }
+
+        mHandler.removeCallbacks(mRecoveryCheck);
+        mFastDecodeMode = false;
+        mBufferingCount = 0;
+        mBufferingWindowStart = 0;
 
         if (mPlayer != null) {
             mPlayer.setSurface(null);
@@ -187,17 +203,25 @@ public class IjkVideoPlayer implements IVideoPlayer {
     @Override
     public void stop() {
         LogUtil.i(TAG + ": [LIFECYCLE] stop() called");
+        mHandler.removeCallbacks(mRecoveryCheck);
         releasePlayer();
         mCurrentUrl = null;
         mPlayerState = STATE_IDLE;
+        mFastDecodeMode = false;
+        mBufferingCount = 0;
+        mBufferingWindowStart = 0;
         changeState(STATE_IDLE, "");
     }
 
     @Override
     public void release() {
         LogUtil.i(TAG + ": [LIFECYCLE] release() called");
+        mHandler.removeCallbacks(mRecoveryCheck);
         releasePlayer();
         removeSurface();
+        mFastDecodeMode = false;
+        mBufferingCount = 0;
+        mBufferingWindowStart = 0;
     }
 
     @Override
@@ -230,48 +254,43 @@ public class IjkVideoPlayer implements IVideoPlayer {
 
         mPlayer = new IjkMediaPlayer();
 
-        boolean useMediaCodec = Build.VERSION.SDK_INT >= 24;
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", useMediaCodec ? 1 : 0);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", useMediaCodec ? 1 : 0);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", useMediaCodec ? 1 : 0);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", useMediaCodec ? 1 : 0);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", useMediaCodec ? 1 : 0);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", useMediaCodec ? 1 : 0);
-        LogUtil.i(TAG + ": MediaCodec " + (useMediaCodec ? "enabled" : "disabled") + " (SDK " + Build.VERSION.SDK_INT + ")");
+        boolean tryMediaCodec = Build.VERSION.SDK_INT >= 19;
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", tryMediaCodec ? 1 : 0);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-all-videos", tryMediaCodec ? 1 : 0);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-avc", tryMediaCodec ? 1 : 0);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-hevc", tryMediaCodec ? 1 : 0);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", tryMediaCodec ? 1 : 0);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", tryMediaCodec ? 1 : 0);
+        LogUtil.i(TAG + ": MediaCodec " + (tryMediaCodec ? "enabled (hardware decode first)" : "disabled") + " SDK=" + Build.VERSION.SDK_INT);
 
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "soundtouch", 1);
 
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 5000000);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 5242880);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 3000000);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 1048576);
 
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 31457280);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 10);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max_cached_duration", 1500);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 2097152);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 2);
 
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-accurate-seek", 1);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "enable-accurate-seek", 0);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "opensles", 0);
 
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect", 1);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_streamed", 1);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_delay_max", 10);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", 60000000);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http_log", 1);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "log_level", 48);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache", 0);
 
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "infbuf", 0);
 
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 0);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-fps", 60);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "synctype", 1);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "av_sync_type", 1);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 120);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-fps", 30);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "video-pictq-size", 3);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "fflags", "fastseek");
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "sync-av-start", 1);
 
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1);
 
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 8);
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_frame", 8);
+        applyDecodeQuality();
 
         mPlayer.setOnPreparedListener(new IMediaPlayer.OnPreparedListener() {
             @Override
@@ -305,9 +324,11 @@ public class IjkVideoPlayer implements IVideoPlayer {
             public boolean onInfo(IMediaPlayer mp, int what, int extra) {
                 switch (what) {
                     case IMediaPlayer.MEDIA_INFO_BUFFERING_START:
+                        onBufferingStarted();
                         changeState(STATE_BUFFERING, "buffering");
                         break;
                     case IMediaPlayer.MEDIA_INFO_BUFFERING_END:
+                        onBufferingEnded();
                         changeState(STATE_READY, "buffered");
                         break;
                     case IMediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START:
@@ -344,6 +365,115 @@ public class IjkVideoPlayer implements IVideoPlayer {
         });
 
         attachSurface();
+    }
+
+    private void applyDecodeQuality() {
+        if (mPlayer == null) return;
+        if (mFastDecodeMode) {
+            LogUtil.w(TAG + ": [ADAPTIVE] fast decode mode: dropping non-key frames");
+            mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48);
+            mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_frame", 8);
+            mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 120);
+        } else {
+            LogUtil.i(TAG + ": [ADAPTIVE] normal decode mode: full quality");
+            mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 0);
+            mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_frame", 0);
+            mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 120);
+        }
+    }
+
+    private void onBufferingStarted() {
+        long now = System.currentTimeMillis();
+        mHandler.removeCallbacks(mRecoveryCheck);
+
+        if (mBufferingWindowStart == 0 || now - mBufferingWindowStart > BUFFERING_WINDOW_MS) {
+            mBufferingCount = 0;
+            mBufferingWindowStart = now;
+        }
+        mBufferingCount++;
+
+        LogUtil.w(TAG + ": [ADAPTIVE] buffering #" + mBufferingCount
+                + " in " + (now - mBufferingWindowStart) + "ms");
+
+        if (!mFastDecodeMode && mBufferingCount >= BUFFERING_THRESHOLD) {
+            mFastDecodeMode = true;
+            LogUtil.e(TAG + ": [ADAPTIVE] SYNC DRIFT DETECTED! switching to fast decode");
+            restartWithFastDecode();
+        }
+    }
+
+    private void onBufferingEnded() {
+        if (mFastDecodeMode) {
+            mHandler.removeCallbacks(mRecoveryCheck);
+            mHandler.postDelayed(mRecoveryCheck, RECOVERY_CHECK_MS);
+        }
+    }
+
+    private final Runnable mRecoveryCheck = new Runnable() {
+        @Override
+        public void run() {
+            if (mFastDecodeMode && mPlayer != null && mCurrentUrl != null) {
+                mFastDecodeMode = false;
+                LogUtil.i(TAG + ": [ADAPTIVE] playback stable, restoring normal decode quality");
+                restartWithNormalDecode();
+            }
+        }
+    };
+
+    private void restartWithFastDecode() {
+        if (mCurrentUrl == null) return;
+        LogUtil.e(TAG + ": [ADAPTIVE] restarting player with skip_loop_filter=48 skip_frame=8");
+
+        if (mPlayer != null) {
+            mPlayer.setSurface(null);
+            mPlayer.reset();
+            mPlayer.release();
+            mPlayer = null;
+        }
+
+        mPreparing = true;
+
+        initPlayer();
+        if (mPlayer == null) return;
+
+        try {
+            applyOptions(mCurrentUrl, mCurrentHeaders);
+            mPlayer.setDataSource(mContext, android.net.Uri.parse(mCurrentUrl));
+            mPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            mPlayer.setScreenOnWhilePlaying(true);
+            mPlayer.prepareAsync();
+        } catch (Exception e) {
+            LogUtil.e(TAG + ": restartWithFastDecode failed: " + e.getMessage());
+            setError(e.getMessage());
+        }
+    }
+
+    private void restartWithNormalDecode() {
+        if (mCurrentUrl == null) return;
+        LogUtil.i(TAG + ": [ADAPTIVE] restarting player with skip_loop_filter=0 skip_frame=0");
+
+        if (mPlayer != null) {
+            mPlayer.setSurface(null);
+            mPlayer.reset();
+            mPlayer.release();
+            mPlayer = null;
+        }
+
+        mPreparing = true;
+
+        initPlayer();
+        if (mPlayer == null) return;
+
+        try {
+            applyOptions(mCurrentUrl, mCurrentHeaders);
+            mPlayer.setDataSource(mContext, android.net.Uri.parse(mCurrentUrl));
+            mPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            mPlayer.setScreenOnWhilePlaying(true);
+            mPlayer.prepareAsync();
+        } catch (Exception e) {
+            LogUtil.e(TAG + ": restartWithNormalDecode failed: " + e.getMessage());
+            setError(e.getMessage());
+        }
     }
 
     private void attachSurface() {

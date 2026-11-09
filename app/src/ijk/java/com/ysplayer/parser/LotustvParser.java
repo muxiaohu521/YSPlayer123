@@ -34,6 +34,12 @@ public class LotustvParser extends BaseParser {
     }
 
     @Override
+    public void clearCache() {
+        sCurrentEntryUrl = null;
+        sEntryFetchTime = 0;
+    }
+
+    @Override
     public boolean canParse(String url) {
         return url != null && url.contains(DOMAIN);
     }

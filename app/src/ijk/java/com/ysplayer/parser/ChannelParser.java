@@ -8,6 +8,9 @@ public interface ChannelParser {
 
     String getName();
 
+    default void clearCache() {
+    }
+
     interface ParseCallback {
         void onSuccess(ParseResult result);
 

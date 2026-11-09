@@ -85,6 +85,12 @@ public class FjtvParser extends BaseParser {
     public String getName() { return "福建网络广播电视台"; }
 
     @Override
+    public void clearCache() {
+        sCache.clear();
+        LogUtil.d(TAG + ": cache cleared");
+    }
+
+    @Override
     public boolean canParse(String url) { return url != null && url.contains(DOMAIN); }
 
     @Override
@@ -286,10 +292,5 @@ public class FjtvParser extends BaseParser {
         } catch (Exception e) {
             throw new RuntimeException("MD5 failed", e);
         }
-    }
-
-    public static void clearCache() {
-        sCache.clear();
-        LogUtil.d(TAG + ": cache cleared");
     }
 }

@@ -82,6 +82,7 @@ public class SxrtvParser extends BaseParser {
     private static final Map<String, StreamCache> sStreamCache = new HashMap<>();
 
     @Override public String getName() { return "山西网络广播电视台"; }
+    @Override public void clearCache() { sInfoCache = null; sStreamCache.clear(); }
     @Override public boolean canParse(String url) { return url != null && url.contains(DOMAIN); }
 
     @Override

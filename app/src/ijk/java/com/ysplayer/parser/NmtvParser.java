@@ -82,6 +82,9 @@ public class NmtvParser extends BaseParser {
     private static volatile ListCache sListCache;
 
     @Override public String getName() { return "奔腾融媒(内蒙古)"; }
+
+    @Override public void clearCache() { sListCache = null; }
+
     @Override public boolean canParse(String url) { return url != null && url.contains(DOMAIN); }
 
     @Override

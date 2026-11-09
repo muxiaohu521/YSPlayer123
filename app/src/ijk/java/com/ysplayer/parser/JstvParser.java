@@ -112,6 +112,21 @@ public class JstvParser extends BaseParser {
     }
 
     @Override
+    public void clearCache() {
+        synchronized (sTokenLock) {
+            sCachedToken = null;
+            sTokenExpiresAt = 0;
+            sTokenRetryAfter = 0;
+        }
+        synchronized (sChannelLock) {
+            sCachedChannels = null;
+            sChannelCacheExpiresAt = 0;
+            sChannelRetryAfter = 0;
+        }
+        LogUtil.i(TAG + ": cache cleared");
+    }
+
+    @Override
     public boolean canParse(String url) {
         return url != null && url.contains(DOMAIN);
     }
@@ -524,22 +539,5 @@ public class JstvParser extends BaseParser {
         if (l.contains("sd") || l.contains("480")) return "480P";
         if (l.contains("low") || l.contains("360")) return "360P";
         return "720P"; // 默认假定 720P
-    }
-
-    /**
-     * 清除缓存（用于调试或网络切换时重置）
-     */
-    public static void clearCache() {
-        synchronized (sTokenLock) {
-            sCachedToken = null;
-            sTokenExpiresAt = 0;
-            sTokenRetryAfter = 0;
-        }
-        synchronized (sChannelLock) {
-            sCachedChannels = null;
-            sChannelCacheExpiresAt = 0;
-            sChannelRetryAfter = 0;
-        }
-        LogUtil.i(TAG + ": cache cleared");
     }
 }

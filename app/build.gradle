@@ -43,9 +43,14 @@ android {
         minSdkVersion androidApi
         targetSdkVersion targetSdkApi
         versionName "1.5.0"
-        // versionCode: 主版本×1亿 + 秒级时间戳后8位; 新版本永远大于旧版本, 同版本新构建可覆盖旧构建
-        versionCode versionName.split("\\.")[0].toInteger() * 100_000_000
-                + (int)(System.currentTimeMillis() / 1000) % 100_000_000
+        // versionCode = 主版本×1亿 + 次版本×1千万 + 分钟级时间戳后7位(回绕周期~19年)
+        // 三层版本号全部参与运算，确保升高版本号必然产生更大的 versionCode
+        def _major = versionName.split("\\.")[0].toInteger()
+        def _minor = versionName.split("\\.")[1].toInteger()
+        def _patch = versionName.split("\\.")[2].toInteger()
+        def _buildNum = ((System.currentTimeMillis() / 60000L) as long % 10_000_000L) as int
+        versionCode _major * 100_000_000 + _minor * 10_000_000 + _buildNum
+        println "[YSPlayer] versionName=${versionName}  versionCode=${versionCode}  build#${_buildNum}"
 
         multiDexEnabled true
 

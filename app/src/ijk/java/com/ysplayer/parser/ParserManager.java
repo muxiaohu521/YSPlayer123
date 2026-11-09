@@ -73,6 +73,17 @@ public final class ParserManager {
         parser.parse(url, userAgent, callback);
     }
 
+    public void clearAllCaches() {
+        for (ChannelParser parser : parsers) {
+            try {
+                parser.clearCache();
+            } catch (Exception e) {
+                LogUtil.w(TAG + ": failed to clear cache for " + parser.getName() + ": " + e.getMessage());
+            }
+        }
+        LogUtil.i(TAG + ": all parser caches cleared");
+    }
+
     public List<ChannelParser> getParsers() {
         return new ArrayList<>(parsers);
     }
