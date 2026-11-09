@@ -62,7 +62,7 @@ public class GeckoWebEngine implements WebEngine {
     private volatile int mParseGeneration;
     private int mParserRetryCount;
     private int mPlayerRetryCount;
-    private static final int MAX_RETRIES = 3;
+    private static final int MAX_RETRIES = 5;
     private static final long RETRY_BASE_DELAY_MS = 1500;
     private Runnable mPendingRetryRunnable;
     private final android.os.Handler mMainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
@@ -294,6 +294,7 @@ public class GeckoWebEngine implements WebEngine {
                         public void onPlayerError(String message) {
                             LogUtil.e(TAG + ": IjkPlayer error: " + message
                                     + " retry=" + mPlayerRetryCount + "/" + MAX_RETRIES);
+                            ParserManager.getInstance().clearAllCaches();
                             retryPlayFromParserUrl();
                         }
                         @Override
@@ -303,7 +304,8 @@ public class GeckoWebEngine implements WebEngine {
                             if (state == IjkVideoPlayer.STATE_READY) {
                                 mPlayerRetryCount = 0;
                             } else if (state == IjkVideoPlayer.STATE_ENDED) {
-                                LogUtil.i(TAG + ": IJK playback ended (live reconnect)");
+                                LogUtil.w(TAG + ": IJK ended unexpectedly (possible URL expiry), retry with fresh URL");
+                                ParserManager.getInstance().clearAllCaches();
                                 retryPlayFromParserUrl();
                             }
                         }
@@ -481,6 +483,7 @@ public class GeckoWebEngine implements WebEngine {
                 }
                 LogUtil.e(TAG + ": parser error: " + message
                         + " retry=" + mParserRetryCount + "/" + MAX_RETRIES);
+                ParserManager.getInstance().clearAllCaches();
                 mParserRetryCount++;
                 if (mParserRetryCount <= MAX_RETRIES) {
                     long delay = RETRY_BASE_DELAY_MS * mParserRetryCount;

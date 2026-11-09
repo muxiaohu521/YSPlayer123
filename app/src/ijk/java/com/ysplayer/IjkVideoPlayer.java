@@ -130,8 +130,12 @@ public class IjkVideoPlayer implements IVideoPlayer {
         if (mUserAgent != null && !mUserAgent.isEmpty()) {
             mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "user_agent", mUserAgent);
         }
+
+        StringBuilder hdr = new StringBuilder();
+        hdr.append("Cache-Control: no-cache, no-store\r\n");
+        hdr.append("Pragma: no-cache\r\n");
+
         if (headers != null && !headers.isEmpty()) {
-            StringBuilder hdr = new StringBuilder();
             for (Map.Entry<String, String> entry : headers.entrySet()) {
                 String key = entry.getKey();
                 String value = entry.getValue();
@@ -139,16 +143,13 @@ public class IjkVideoPlayer implements IVideoPlayer {
                 if ("User-Agent".equalsIgnoreCase(key)) {
                     mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "user_agent", value);
                 } else {
-                    if (hdr.length() > 0) hdr.append("\r\n");
-                    hdr.append(key).append(": ").append(value);
+                    hdr.append(key).append(": ").append(value).append("\r\n");
                 }
             }
-            if (hdr.length() > 0) {
-                hdr.append("\r\n");
-                LogUtil.i("IJK_PLAY: >>> IJK headers option = [" + hdr.toString() + "]");
-                mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "headers", hdr.toString());
-            }
         }
+
+        LogUtil.i("IJK_PLAY: >>> IJK headers option = [" + hdr.toString().replace("\r\n", " | ") + "]");
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "headers", hdr.toString());
     }
 
     public void setUserAgent(String ua) {
@@ -280,6 +281,7 @@ public class IjkVideoPlayer implements IVideoPlayer {
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_delay_max", 10);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", 60000000);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache", 0);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http_persistent", 0);
 
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "infbuf", 1);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "max_reload", 100);

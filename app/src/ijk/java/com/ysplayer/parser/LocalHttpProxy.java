@@ -232,6 +232,8 @@ public final class LocalHttpProxy {
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                             + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
             conn.setRequestProperty("Accept", "*/*");
+            conn.setRequestProperty("Cache-Control", "no-cache, no-store");
+            conn.setRequestProperty("Pragma", "no-cache");
             if (mRequestHeaders != null) {
                 for (Map.Entry<String, String> e : mRequestHeaders.entrySet()) {
                     conn.setRequestProperty(e.getKey(), e.getValue());
@@ -276,6 +278,8 @@ public final class LocalHttpProxy {
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                         + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
         conn.setRequestProperty("Accept", "*/*");
+        conn.setRequestProperty("Cache-Control", "no-cache, no-store");
+        conn.setRequestProperty("Pragma", "no-cache");
         conn.setRequestProperty("Origin", "https://www.qtv.com.cn");
         conn.setRequestProperty("Referer", "https://www.qtv.com.cn/");
         if (mRequestHeaders != null) {

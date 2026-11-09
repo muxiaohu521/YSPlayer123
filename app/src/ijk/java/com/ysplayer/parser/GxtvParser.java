@@ -43,6 +43,11 @@ public class GxtvParser extends BaseParser {
     }
 
     @Override
+    public void clearCache() {
+        stopProxy();
+    }
+
+    @Override
     public boolean canParse(String url) {
         return url != null && url.contains(DOMAIN);
     }

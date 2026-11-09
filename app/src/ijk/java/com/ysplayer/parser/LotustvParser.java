@@ -35,6 +35,10 @@ public class LotustvParser extends BaseParser {
 
     @Override
     public void clearCache() {
+        if (sProxy != null) {
+            sProxy.stop();
+            sProxy = null;
+        }
         sCurrentEntryUrl = null;
         sEntryFetchTime = 0;
     }
