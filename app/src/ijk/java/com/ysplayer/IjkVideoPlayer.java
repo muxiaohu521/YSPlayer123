@@ -268,7 +268,7 @@ public class IjkVideoPlayer implements IVideoPlayer {
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 3000000);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "probesize", 1048576);
 
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 2097152);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-buffer-size", 15728640);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "min-frames", 2);
 
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 1);
@@ -281,14 +281,13 @@ public class IjkVideoPlayer implements IVideoPlayer {
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", 60000000);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "dns_cache", 0);
 
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "infbuf", 0);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "infbuf", 1);
+        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "max_reload", 100);
 
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 120);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "max-fps", 30);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "video-pictq-size", 3);
         mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "sync-av-start", 1);
-
-        mPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "packet-buffering", 1);
 
         applyDecodeQuality();
 
