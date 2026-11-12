@@ -65,8 +65,7 @@ public class QtvParser extends BaseParser {
                     Map<String, String> cdnHeaders = new HashMap<>();
                     cdnHeaders.put("Referer", "https://www.qtv.com.cn/");
                     cdnHeaders.put("Origin", "https://www.qtv.com.cn");
-                    cdnHeaders.put("User-Agent", userAgent != null && !userAgent.isEmpty()
-                            ? userAgent : UA_MOBILE);
+                    cdnHeaders.put("User-Agent", resolveUa(userAgent));
 
                     HttpFetcher.Response m3u8Resp = HttpFetcher.get(m3u8Url, cdnHeaders);
                     if (m3u8Resp.code != 200) {

@@ -88,7 +88,7 @@ public class HebrtvParser extends BaseParser {
                         return;
                     }
 
-                    List<ChannelInfo> channels = getChannelList();
+                    List<ChannelInfo> channels = getChannelList(userAgent);
                     if (channels == null || channels.isEmpty()) {
                         callback.onError("河北台获取频道列表失败");
                         return;
@@ -137,7 +137,7 @@ public class HebrtvParser extends BaseParser {
         return -1;
     }
 
-    private static List<ChannelInfo> getChannelList() {
+    private static List<ChannelInfo> getChannelList(String userAgent) {
         long now = System.currentTimeMillis();
         List<ChannelInfo> hit = sChannelList;
         if (hit != null && now < sChannelExpiresAt) {
@@ -149,7 +149,7 @@ public class HebrtvParser extends BaseParser {
                 return hit;
             }
             try {
-                sChannelList = fetchChannelList();
+                sChannelList = fetchChannelList(userAgent);
                 sChannelExpiresAt = now + CHANNEL_TTL_MS;
                 LogUtil.i(TAG + ": 频道列表更新, " + sChannelList.size() + "个频道");
             } catch (Exception e) {
@@ -162,10 +162,9 @@ public class HebrtvParser extends BaseParser {
         }
     }
 
-    private static List<ChannelInfo> fetchChannelList() throws Exception {
+    private static List<ChannelInfo> fetchChannelList(String userAgent) throws Exception {
         Map<String, String> headers = new HashMap<>();
-        headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                + "AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36");
+        headers.put("User-Agent", resolveUa(userAgent));
         headers.put("Referer", "https://www.hebrts.cn/19/19js/st/xdszb/index.shtml");
         headers.put("Origin", "https://www.hebrts.cn");
         headers.put("Accept", "application/json");

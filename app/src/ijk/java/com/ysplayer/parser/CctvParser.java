@@ -169,7 +169,7 @@ public class CctvParser extends BaseParser {
                         return;
                     }
 
-                    Map<String, String> channels = getChannelUrls();
+                    Map<String, String> channels = getChannelUrls(userAgent);
                     if (channels == null) {
                         callback.onError("获取频道列表失败");
                         return;
@@ -265,7 +265,7 @@ public class CctvParser extends BaseParser {
         return null;
     }
 
-    private Map<String, String> getChannelUrls() {
+    private Map<String, String> getChannelUrls(String userAgent) {
         long now = System.currentTimeMillis();
         if (sChannelUrlCache != null && (now - sChannelCacheTimestamp) < CACHE_TTL_MS) {
             return sChannelUrlCache;
@@ -274,15 +274,15 @@ public class CctvParser extends BaseParser {
             if (sChannelUrlCache != null && (now - sChannelCacheTimestamp) < CACHE_TTL_MS) {
                 return sChannelUrlCache;
             }
-            sChannelUrlCache = fetchAndDecryptChannels();
+            sChannelUrlCache = fetchAndDecryptChannels(userAgent);
             sChannelCacheTimestamp = System.currentTimeMillis();
             return sChannelUrlCache;
         }
     }
 
-    private Map<String, String> fetchAndDecryptChannels() {
+    private Map<String, String> fetchAndDecryptChannels(String userAgent) {
         try {
-            Map<String, String> headers = defaultHeaders("https://tv.cctv.com/");
+            Map<String, String> headers = defaultHeadersWithUA("https://tv.cctv.com/", userAgent);
             HttpFetcher.Response versionResp = HttpFetcher.get(VERSION_URL, headers);
             if (versionResp.code != 200) {
                 LogUtil.e(TAG + ": version.json returned " + versionResp.code);
@@ -303,7 +303,7 @@ public class CctvParser extends BaseParser {
             }
 
             String encryptedB64 = configResp.bodyAsString().trim();
-            String json = aesDecrypt(encryptedB64);
+            String json = aesDecrypt(encryptedB64, userAgent);
             if (json == null) {
                 LogUtil.e(TAG + ": AES decrypt failed");
                 return null;
@@ -446,8 +446,8 @@ public class CctvParser extends BaseParser {
         return CDN_PRIORITY.length;
     }
 
-    private static String aesDecrypt(String base64Data) {
-        byte[][] keyIv = getAesKeyIv();
+    private static String aesDecrypt(String base64Data, String userAgent) {
+        byte[][] keyIv = getAesKeyIv(userAgent);
         if (keyIv == null || keyIv[0] == null || keyIv[1] == null) return null;
 
         try {
@@ -461,7 +461,7 @@ public class CctvParser extends BaseParser {
         } catch (Exception e) {
             LogUtil.w(TAG + ": AES decrypt with cached key failed, retrying brute-force...");
 
-            String js = fetchLiveplayerJs();
+            String js = fetchLiveplayerJs(userAgent);
             if (js == null) return null;
 
             List<byte[]> keyCandidates = new ArrayList<>();
@@ -488,8 +488,8 @@ public class CctvParser extends BaseParser {
 
     private static final CctvParser sInstance = new CctvParser();
 
-    public static String getChannelUrlForId(String channelId) {
-        Map<String, String> channels = sInstance.getChannelUrls();
+    public static String getChannelUrlForId(String channelId, String userAgent) {
+        Map<String, String> channels = sInstance.getChannelUrls(userAgent);
         if (channels == null) return null;
         return channels.get(channelId);
     }
@@ -501,14 +501,14 @@ public class CctvParser extends BaseParser {
         return channelId;
     }
 
-    private static synchronized byte[][] getAesKeyIv() {
+    private static synchronized byte[][] getAesKeyIv(String userAgent) {
         long now = System.currentTimeMillis();
         if (sCachedAesKey != null && sCachedAesIv != null
                 && (now - sKeyCacheTimestamp) < KEY_CACHE_TTL_MS) {
             return new byte[][]{sCachedAesKey, sCachedAesIv};
         }
 
-        String js = fetchLiveplayerJs();
+        String js = fetchLiveplayerJs(userAgent);
         if (js == null) {
             LogUtil.e(TAG + ": liveplayer.js download failed, AES key unavailable");
             return null;
@@ -553,10 +553,10 @@ public class CctvParser extends BaseParser {
         return new byte[][]{sCachedAesKey, sCachedAesIv};
     }
 
-    private static String fetchLiveplayerJs() {
+    private static String fetchLiveplayerJs(String userAgent) {
         Map<String, String> headers = new HashMap<>();
         headers.put("Referer", "https://tv.cctv.com/");
-        headers.put("User-Agent", UA_MOBILE);
+        headers.put("User-Agent", resolveUa(userAgent));
         headers.put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
         for (String url : LIVEPLAYER_ALT_URLS) {
             try {

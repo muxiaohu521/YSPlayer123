@@ -9,6 +9,8 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.FutureTask;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -19,14 +21,39 @@ public class CztvParser extends BaseParser {
 
     private static final String PLAY_INFO_URL =
             "https://zlive-das.cztv.com/zapp/live/tv/channel/playInfo";
-    private static final String AUTH_SALT = "CHWr9VybUeBZE1VB";
+    // 【测试】硬编码兜底值已注释：抓取失败时盐为 null，签名直接失效以便暴露问题。
+    // private static final String AUTH_SALT = "CHWr9VybUeBZE1VB";
 
     private static final String[] QUALITY_PREFERENCE = {"720P", "1080P"};
     private static final Pattern CHANNEL_ID_PATTERN = Pattern.compile("/liveTV/(\\d+)");
 
+    // ---- 签名盐自动抓取 ----
+    private static final String PAGE_URL = "https://www.cztv.com/";
+    private static final long SALT_CACHE_TTL_MS = 30 * 60 * 1000L; // 盐缓存 30 分钟
+    private static final Pattern INDEX_JS_PAT =
+            Pattern.compile("/assets/index-([A-Za-z0-9_-]+)\\.js");
+    private static final Pattern CHUNK_PAT =
+            Pattern.compile("directSeedingTV-([A-Za-z0-9_-]+)\\.js");
+    private static final Pattern SALT_PAT =
+            Pattern.compile("-0-0-([A-Za-z0-9]{10,32})");
+
+    private static volatile String sAuthSalt = null;              // 当前生效盐（仅自动抓取成功后更新；测试期无硬编码兜底）
+    private static volatile long sAuthSaltCheckedAt = 0L;         // 上次抓取盐的时间戳
+    private static volatile FutureTask<String> sSaltRefreshTask = null; // 并发去重：进行中的抓取
+    private static final Object sSaltLock = new Object();
+
     @Override
     public String getName() {
         return "中国蓝TV(浙江)";
+    }
+
+    @Override
+    public void clearCache() {
+        synchronized (sSaltLock) {
+            sAuthSaltCheckedAt = 0;
+            sSaltRefreshTask = null;
+        }
+        LogUtil.i(TAG + ": cache cleared");
     }
 
     @Override
@@ -46,6 +73,9 @@ public class CztvParser extends BaseParser {
                         return;
                     }
                     LogUtil.d(TAG + ": channelId=" + channelId);
+
+                    // 并行刷新签名盐（与 playInfo 请求重叠，降低首次解析延迟）
+                    ensureAuthSaltAsync();
 
                     PlayInfoResult playInfo = fetchPlayInfo(channelId, userAgent);
                     if (playInfo == null || playInfo.m3u8Url == null) {
@@ -167,7 +197,7 @@ public class CztvParser extends BaseParser {
             String pathname = parsed.getPath();
             long timestamp = System.currentTimeMillis();
 
-            String signStr = pathname + "-" + timestamp + "-0-0-" + AUTH_SALT;
+            String signStr = pathname + "-" + timestamp + "-0-0-" + getAuthSalt();
             MessageDigest md = MessageDigest.getInstance("MD5");
             byte[] digest = md.digest(signStr.getBytes("UTF-8"));
             StringBuilder hex = new StringBuilder();
@@ -181,5 +211,96 @@ public class CztvParser extends BaseParser {
             LogUtil.w(TAG + ": sign stream URL failed, using raw: " + e.getMessage());
             return rawUrl;
         }
+    }
+
+    // ======================== 签名盐自动抓取 ========================
+
+    /**
+     * 拉取纯文本资源。HttpFetcher 已支持 gzip 解压与最多 5 次重定向。
+     */
+    private static String httpGetText(String url) {
+        try {
+            HttpFetcher.Response resp = HttpFetcher.get(url, null);
+            if (resp.code == 200) return resp.bodyAsString();
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * 三步自动抓取签名盐：首页 HTML -> 入口 JS -> 取流逻辑 chunk，盐以明文 "-0-0-<盐>" 出现。
+     */
+    private static String fetchAuthSalt() {
+        try {
+            String html = httpGetText(PAGE_URL);
+            if (html == null) return null;
+
+            Matcher idxMatcher = INDEX_JS_PAT.matcher(html);
+            if (!idxMatcher.find()) return null;
+            String hash = idxMatcher.group(1);
+
+            String indexJs = httpGetText(PAGE_URL + "assets/index-" + hash + ".js");
+            if (indexJs == null) return null;
+
+            Matcher chunkMatcher = CHUNK_PAT.matcher(indexJs);
+            if (!chunkMatcher.find()) return null;
+            String chunkHash = chunkMatcher.group(1);
+
+            String chunkJs = httpGetText(PAGE_URL + "assets/directSeedingTV-" + chunkHash + ".js");
+            if (chunkJs == null) return null;
+
+            Matcher saltMatcher = SALT_PAT.matcher(chunkJs);
+            if (saltMatcher.find()) return saltMatcher.group(1);
+            return null;
+        } catch (Exception e) {
+            LogUtil.e(TAG + ": fetch auth salt failed", e);
+            return null;
+        }
+    }
+
+    /**
+     * 启动/复用后台刷新，返回可等待的 FutureTask（盐仍新鲜时返回 null，直接使用 sAuthSalt）。
+     */
+    private static FutureTask<String> ensureAuthSaltAsync() {
+        long now = System.currentTimeMillis();
+        synchronized (sSaltLock) {
+            if (sAuthSaltCheckedAt != 0 && now - sAuthSaltCheckedAt < SALT_CACHE_TTL_MS) {
+                return null;
+            }
+            if (sSaltRefreshTask != null && !sSaltRefreshTask.isDone()) {
+                return sSaltRefreshTask;
+            }
+            FutureTask<String> task = new FutureTask<>(new Callable<String>() {
+                @Override
+                public String call() {
+                    String fetched = fetchAuthSalt();
+                    if (fetched != null) {
+                        sAuthSalt = fetched;
+                        LogUtil.i(TAG + ": auth salt refreshed from cloud");
+                    } else {
+                        LogUtil.w(TAG + ": auth salt fetch failed, keep current value");
+                    }
+                    sAuthSaltCheckedAt = System.currentTimeMillis();
+                    return sAuthSalt;
+                }
+            });
+            sSaltRefreshTask = task;
+            new Thread(task, "cztv-salt-refresh").start();
+            return task;
+        }
+    }
+
+    /**
+     * 等待盐就绪（含冷却期与并发去重）。解析运行在线程池，允许短暂阻塞。
+     */
+    private static String getAuthSalt() {
+        FutureTask<String> task = ensureAuthSaltAsync();
+        if (task != null) {
+            try {
+                return task.get();
+            } catch (Exception ignored) {
+            }
+        }
+        return sAuthSalt;
     }
 }

@@ -34,10 +34,6 @@ public class FjtvParser extends BaseParser {
     private static final long EXPIRY_GUARD_MS = 60 * 1000L;
     private static final long REQUEST_TIMEOUT_MS = 10 * 1000L;
 
-    private static final String UA =
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-            + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-
     private static final class ChannelDef {
         final String id;
         final String rawName;
@@ -110,7 +106,7 @@ public class FjtvParser extends BaseParser {
                         return;
                     }
 
-                    String m3u8Url = getSignedStream(ch);
+                    String m3u8Url = getSignedStream(ch, userAgent);
                     if (m3u8Url == null || m3u8Url.isEmpty()) {
                         callback.onError("福建台：获取播放地址失败");
                         return;
@@ -118,7 +114,7 @@ public class FjtvParser extends BaseParser {
 
                     Map<String, String> headers = new HashMap<>();
                     headers.put("Referer", "https://live.fjtv.net/");
-                    headers.put("User-Agent", UA);
+                    headers.put("User-Agent", resolveUa(userAgent));
 
                     LogUtil.i(TAG + ": " + ch.displayName + " -> " + m3u8Url);
                     callback.onSuccess(new ParseResult(m3u8Url, ch.displayName,
@@ -138,7 +134,7 @@ public class FjtvParser extends BaseParser {
         return null;
     }
 
-    private static String getSignedStream(ChannelDef ch) throws Exception {
+    private static String getSignedStream(ChannelDef ch, String userAgent) throws Exception {
         long now = System.currentTimeMillis();
         CachedStream cached = sCache.get(ch.id);
         if (cached != null && cached.expiresAt > now + EXPIRY_GUARD_MS) {
@@ -150,7 +146,7 @@ public class FjtvParser extends BaseParser {
         String signature = md5(raw);
 
         Map<String, String> headers = new HashMap<>();
-        headers.put("User-Agent", "node");
+        headers.put("User-Agent", resolveUa(userAgent));
         headers.put("X-API-TIMESTAMP", timestamp);
         headers.put("X-API-KEY", API_KEY);
         headers.put("X-AUTH-TYPE", "md5");

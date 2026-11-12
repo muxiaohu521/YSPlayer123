@@ -60,7 +60,7 @@ public class SnrtvParser extends BaseParser {
                         return;
                     }
 
-                    String m3u8Url = resolveM3u8(key);
+                    String m3u8Url = resolveM3u8(key, userAgent);
                     if (m3u8Url == null) {
                         callback.onError("陕西台未找到频道流地址");
                         return;
@@ -90,8 +90,8 @@ public class SnrtvParser extends BaseParser {
         return key;
     }
 
-    private static String resolveM3u8(String key) throws Exception {
-        Map<String, String> catalog = getCatalog();
+    private static String resolveM3u8(String key, String userAgent) throws Exception {
+        Map<String, String> catalog = getCatalog(userAgent);
         if (catalog == null) return null;
 
         String m3u8Url = catalog.get(key);
@@ -103,7 +103,7 @@ public class SnrtvParser extends BaseParser {
         return m3u8Url + "?_=" + (System.currentTimeMillis() / 1000L);
     }
 
-    private static Map<String, String> getCatalog() {
+    private static Map<String, String> getCatalog(String userAgent) {
         long now = System.currentTimeMillis();
 
         Map<String, String> hit = sCatalogCache;
@@ -120,7 +120,7 @@ public class SnrtvParser extends BaseParser {
             try {
                 LogUtil.d(TAG + ": 拉取频道目录...");
                 Map<String, String> fresh =
-                        fetchAndDecodeCatalog();
+                        fetchAndDecodeCatalog(userAgent);
                 sCatalogCache = fresh;
                 sCatalogRefreshAt = now + CATALOG_REFRESH_MS;
                 sCatalogHardExpiresAt = now + CATALOG_HARD_TTL_MS;
@@ -137,12 +137,10 @@ public class SnrtvParser extends BaseParser {
         }
     }
 
-    private static Map<String, String> fetchAndDecodeCatalog()
+    private static Map<String, String> fetchAndDecodeCatalog(String userAgent)
             throws Exception {
         Map<String, String> reqHeaders = new HashMap<>();
-        reqHeaders.put("User-Agent",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                + "AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36");
+        reqHeaders.put("User-Agent", resolveUa(userAgent));
         reqHeaders.put("Accept", "*/*");
         reqHeaders.put("Referer", "http://live.snrtv.com/");
 

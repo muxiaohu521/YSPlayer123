@@ -25,6 +25,9 @@ public class NmtvParser extends BaseParser {
     private static final String TAG = "NmtvParser";
     private static final String DOMAIN = "nmtv.cn";
     private static final String API_URL = "https://api-bt.nmtv.cn/broadcast/list";
+    // XXTEA 对称加解密密钥（固定值，非轮换签名盐）。明文位于
+    // https://www.nmtv.cn/assets/index.<hash>.js（含 broadcast/list 拦截器的共享 chunk）。
+    // 因密钥固定且所在 chunk 名为通用 index.<hash>.js、无法按稳定命名定位，故保留硬编码。
     private static final String XXTEA_KEY = "5b28bae827e651b3";
     private static final long CACHE_TTL_MS = 30 * 1000L;
     private static final long RETRY_MS = 5 * 1000L;
@@ -174,7 +177,7 @@ public class NmtvParser extends BaseParser {
                 encryptedBody, android.util.Base64.NO_WRAP);
 
         Map<String, String> headers = new HashMap<>();
-        headers.put("User-Agent", userAgent != null ? userAgent : UA_MOBILE);
+        headers.put("User-Agent", resolveUa(userAgent));
         headers.put("Accept", "application/json");
         headers.put("Client-Type", "web");
         headers.put("Content-Type", "application/json");

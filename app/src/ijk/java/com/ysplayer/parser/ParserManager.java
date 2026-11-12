@@ -31,6 +31,7 @@ public final class ParserManager {
         parsers.add(new DbwParser());
         parsers.add(new GxtvParser());
         parsers.add(new GzstvParser());
+        parsers.add(new GdtvParser());
         parsers.add(new FjtvParser());
         parsers.add(new SnrtvParser());
         parsers.add(new MgtvParser());
@@ -38,12 +39,12 @@ public final class ParserManager {
         parsers.add(new NmtvParser());
         parsers.add(new SxrtvParser());
         parsers.add(new LotustvParser());
+        parsers.add(new HkstvParser());
+        parsers.add(new HbtvParser());
         parsers.add(new HnntvParser());
         parsers.add(new JxntvParser());
 
         LogUtil.i(TAG + ": registered " + parsers.size() + " parsers");
-
-        YangshipinParser.warmUp();
     }
 
     public boolean canParse(String url) {
@@ -70,6 +71,9 @@ public final class ParserManager {
             return;
         }
         LogUtil.i(TAG + ": using parser [" + parser.getName() + "] for: " + url);
+        if (parser instanceof YangshipinParser) {
+            YangshipinParser.warmUp(userAgent);
+        }
         parser.parse(url, userAgent, callback);
     }
 

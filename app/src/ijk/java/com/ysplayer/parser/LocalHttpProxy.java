@@ -34,13 +34,25 @@ public final class LocalHttpProxy {
         String refreshEntryUrl(String expiredUrl);
     }
 
+    /** m3u8 清单内容提供器：绕过 HttpURLConnection，由外部（如隐藏 WebView 页面上下文）取回清单字节。 */
+    public interface ManifestFetcher {
+        byte[] fetchManifest();
+    }
+
+    /** URL 校验器：返回校验后的 URL，非法时返回 null（用于代理侧白名单，防止代理任意地址）。 */
+    public interface UrlValidator {
+        String validate(String url);
+    }
+
     private final String mRemoteHost;
     private volatile String mM3u8Url;
     private final String mM3u8BaseUrl;
-    private final String mM3u8QuerySuffix;
+    private String mM3u8QuerySuffix;
     private final Map<String, String> mRequestHeaders;
     private SegmentTransformer mSegmentTransformer;
     private EntryRefresher mEntryRefresher;
+    private ManifestFetcher mManifestFetcher;
+    private UrlValidator mUrlValidator;
 
     private ServerSocket mServer;
     private int mPort;
@@ -70,6 +82,16 @@ public final class LocalHttpProxy {
     /** 设置 m3u8 入口 URL 刷新回调，传 null 则禁用自动刷新。 */
     public void setEntryRefresher(EntryRefresher refresher) {
         this.mEntryRefresher = refresher;
+    }
+
+    /** 设置 m3u8 清单内容提供器（如隐藏 WebView），传 null 则回退到 HttpURLConnection 拉取。 */
+    public void setManifestFetcher(ManifestFetcher fetcher) {
+        this.mManifestFetcher = fetcher;
+    }
+
+    /** 设置 URL 校验器（白名单），传 null 则不做校验。 */
+    public void setUrlValidator(UrlValidator validator) {
+        this.mUrlValidator = validator;
     }
 
     public synchronized int start() throws IOException {
@@ -188,6 +210,14 @@ public final class LocalHttpProxy {
                         fullUrl += mM3u8QuerySuffix;
                     }
                 }
+                if (mUrlValidator != null) {
+                    String validated = mUrlValidator.validate(fullUrl);
+                    if (validated == null) {
+                        LogUtil.w(TAG + ": rejected non-whitelisted URL in manifest: " + fullUrl);
+                        continue;
+                    }
+                    fullUrl = validated;
+                }
                 String encoded = HttpUtils.encodeUrl(fullUrl);
                 sb.append("http://127.0.0.1:").append(mPort)
                         .append("/seg/").append(encoded).append("\r\n");
@@ -213,6 +243,8 @@ public final class LocalHttpProxy {
             String newUrl = mEntryRefresher.refreshEntryUrl(mM3u8Url);
             if (newUrl != null && !newUrl.equals(mM3u8Url)) {
                 mM3u8Url = newUrl;
+                int qi = newUrl.indexOf('?');
+                mM3u8QuerySuffix = (qi >= 0) ? newUrl.substring(qi) : "";
                 LogUtil.i(TAG + ": entry refreshed, retrying m3u8 fetch");
                 byte[] refreshed = doFetchM3u8();
                 if (refreshed != null) return refreshed;
@@ -222,15 +254,26 @@ public final class LocalHttpProxy {
     }
 
     private byte[] doFetchM3u8() {
+        if (mManifestFetcher != null) {
+            try {
+                byte[] body = mManifestFetcher.fetchManifest();
+                if (body != null && body.length > 0) {
+                    mLastM3u8Fetch = System.currentTimeMillis();
+                    mM3u8Cache = body;
+                    LogUtil.d(TAG + ": m3u8 fetched via manifest provider, " + body.length + " bytes");
+                    return mM3u8Cache;
+                }
+            } catch (Exception e) {
+                LogUtil.e(TAG + ": manifest provider failed: " + e.getMessage());
+            }
+            return null;
+        }
         long now = System.currentTimeMillis();
         try {
             URL urlObj = new URL(mM3u8Url);
             HttpURLConnection conn = (HttpURLConnection) urlObj.openConnection();
             conn.setConnectTimeout(5000);
             conn.setReadTimeout(5000);
-            conn.setRequestProperty("User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                            + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
             conn.setRequestProperty("Accept", "*/*");
             conn.setRequestProperty("Cache-Control", "no-cache, no-store");
             conn.setRequestProperty("Pragma", "no-cache");
@@ -268,15 +311,22 @@ public final class LocalHttpProxy {
         String encoded = path.substring(5);
         String remoteUrl = HttpUtils.decodeUrl(encoded);
 
+        if (mUrlValidator != null) {
+            String validated = mUrlValidator.validate(remoteUrl);
+            if (validated == null) {
+                LogUtil.w(TAG + ": rejected non-whitelisted segment URL: " + remoteUrl);
+                sendNotFound(out);
+                return;
+            }
+            remoteUrl = validated;
+        }
+
         LogUtil.d(TAG + ": fetching segment: " + remoteUrl);
 
         URL urlObj = new URL(remoteUrl);
         HttpURLConnection conn = (HttpURLConnection) urlObj.openConnection();
         conn.setConnectTimeout(10000);
         conn.setReadTimeout(15000);
-        conn.setRequestProperty("User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
         conn.setRequestProperty("Accept", "*/*");
         conn.setRequestProperty("Cache-Control", "no-cache, no-store");
         conn.setRequestProperty("Pragma", "no-cache");

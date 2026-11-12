@@ -32,6 +32,10 @@ public final class HttpFetcher {
         return request(url, "POST", headers, body);
     }
 
+    public static Response options(String url, Map<String, String> headers) throws IOException {
+        return request(url, "OPTIONS", headers, null);
+    }
+
     private static Response request(String url, String method,
             Map<String, String> headers, byte[] body) throws IOException {
         HttpURLConnection conn = null;

@@ -23,10 +23,6 @@ public class GzstvParser extends BaseParser {
     private static final long TOKEN_REFRESH_MS = 30 * 1000L;
     private static final long TOKEN_HARD_TTL_MS = 2 * 60 * 1000L;
 
-    private static final String UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-
     private static final String LOGO_BASE =
             "https://mstatic.gzstv.com/media/streams/images/2021/01/04/";
 
@@ -109,7 +105,7 @@ public class GzstvParser extends BaseParser {
                         return;
                     }
 
-                    String m3u8Url = getSignedStream(channel);
+                    String m3u8Url = getSignedStream(channel, userAgent);
                     if (m3u8Url == null || m3u8Url.isEmpty()) {
                         callback.onError("贵州台：获取播放地址失败");
                         return;
@@ -137,7 +133,7 @@ public class GzstvParser extends BaseParser {
         return null;
     }
 
-    private static String getSignedStream(ChannelDef channel) throws Exception {
+    private static String getSignedStream(ChannelDef channel, String userAgent) throws Exception {
         long now = System.currentTimeMillis();
         CachedToken cached = sTokenCache.get(channel.ref);
         if (cached != null && (cached.refreshAt > now || cached.hardExpiresAt > now)) {
@@ -151,7 +147,7 @@ public class GzstvParser extends BaseParser {
         headers.put("Accept", "application/json, text/plain, */*");
         headers.put("Origin", PAGE_ORIGIN);
         headers.put("Referer", PAGE_ORIGIN + "/tv/" + channel.slug);
-        headers.put("User-Agent", UA);
+        headers.put("User-Agent", resolveUa(userAgent));
 
         HttpFetcher.Response resp = HttpFetcher.get(apiUrl, headers);
         if (resp.code != 200) {

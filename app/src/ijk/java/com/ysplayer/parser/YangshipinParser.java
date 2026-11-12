@@ -57,8 +57,6 @@ public final class YangshipinParser extends BaseParser {
     // ---- capi 网页端频道列表 API ----
     private static final String CAPI_URL =
             "https://capi.yangshipin.cn/api/oms/pc/page/PG00000004";
-    private static final String CAPI_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36";
     private static final long CAPT_CACHE_TTL_MS = 24 * 60 * 60 * 1000L;
 
     private static final int PLATFORM = 4330403;
@@ -781,12 +779,12 @@ public final class YangshipinParser extends BaseParser {
     // capi 频道列表获取 → PID→channelId 映射
     // ============================================================
 
-    public static void warmUp() {
+    public static void warmUp(final String userAgent) {
         if (sPidToChannelId != null) return;
         execute(new Runnable() {
             @Override
             public void run() {
-                fetchCapiChannelList();
+                fetchCapiChannelList(userAgent);
             }
         });
     }
@@ -810,7 +808,7 @@ public final class YangshipinParser extends BaseParser {
         return sPidToChannelId;
     }
 
-    private static synchronized void fetchCapiChannelList() {
+    private static synchronized void fetchCapiChannelList(String userAgent) {
         long now = System.currentTimeMillis();
         if (sPidToChannelId != null && (now - sCapiCacheTimestamp) < CAPT_CACHE_TTL_MS) {
             return;
@@ -821,7 +819,7 @@ public final class YangshipinParser extends BaseParser {
             LogUtil.d(TAG + ": 从 capi 获取频道列表...");
             String capiUrl = CAPI_URL + "?t=" + System.currentTimeMillis();
             Map<String, String> capiHeaders = new HashMap<>();
-            capiHeaders.put("User-Agent", CAPI_UA);
+            capiHeaders.put("User-Agent", resolveUa(userAgent));
             capiHeaders.put("Referer", "https://www.yangshipin.cn/");
             capiHeaders.put("yspappid", "519748109");
             capiHeaders.put("platform", "109");
@@ -1235,7 +1233,7 @@ public final class YangshipinParser extends BaseParser {
             @Override
             public void run() {
                 try {
-                    ParseResult result = resolve(url);
+                    ParseResult result = resolve(url, userAgent);
                     if (result != null && result.isValid()) {
                         callback.onSuccess(result);
                     } else {
@@ -1249,13 +1247,13 @@ public final class YangshipinParser extends BaseParser {
         });
     }
 
-    private ParseResult resolve(String url) throws Exception {
+    private ParseResult resolve(String url, String userAgent) throws Exception {
         String pid = extractQueryParam(url, "pid");
         if (pid == null) return null;
 
         Map<String, String> pidMap = getPidToChannelId();
         if (pidMap == null) {
-            fetchCapiChannelList();
+            fetchCapiChannelList(userAgent);
             pidMap = getPidToChannelId();
         }
         if (pidMap == null) return null;

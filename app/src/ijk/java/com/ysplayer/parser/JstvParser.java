@@ -15,6 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.concurrent.Callable;
+import java.util.concurrent.FutureTask;
 
 public class JstvParser extends BaseParser {
 
@@ -28,9 +30,19 @@ public class JstvParser extends BaseParser {
     private static final String CHANNEL_LIST_URL = "https://publish-lizhi.jstv.com/nav/8385";
 
     // ---- 流签名参数 ----
-    private static final String STREAM_SECRET = "wrf2yJaCwC8HX3cfJz8P";
+    // 2026-11-09 核对官网 JS（live.jstv.com 的 encodeLiveUrl）：签名密钥已更新，
+    // 旧参数 'wrf2yJaCwC8HX3cfJz8P' 会令全部频道的 HLS 返回 403。
+    // 密钥在官网前端 JS 中以 atob(字符串.slice(6,-3)) 混淆存储，会随官网重新发布而变更，
+    // 因此实现 fetchStreamSecret() 自动云端抓取更新。
+    // 【测试】硬编码兜底值已注释：抓取失败时密钥为 null，签名直接失效以便暴露问题。
+    // private static final String STREAM_SECRET = "enxG6z6eEWFWKHeTFNQ8";
     private static final String STREAM_HOST = "litchi-play-encrypted-site.jstv.com";
     private static final int STREAM_TTL_SECONDS = 180;
+
+    // ---- 密钥自动抓取 ----
+    private static final String PAGE_URL = "https://live.jstv.com/";
+    private static final long SECRET_CACHE_TTL_MS = 30 * 60 * 1000L; // 密钥缓存 30 分钟
+    private static final long SECRET_RETRY_MS = 60 * 1000L;          // 密钥抓取失败后重试间隔
 
     // ---- 缓存 ----
     private static final long TOKEN_CACHE_TTL_MS = 10 * 60 * 1000L;     // 令牌缓存 10 分钟
@@ -48,6 +60,12 @@ public class JstvParser extends BaseParser {
     private static volatile long sChannelCacheExpiresAt;
     private static volatile long sChannelRetryAfter;
     private static final Object sChannelLock = new Object();
+
+    private static volatile String sStreamSecret = null;   // 当前生效密钥（仅自动抓取成功后更新；测试期无硬编码兜底）
+    private static volatile long sStreamSecretCheckedAt = 0L;       // 上次「成功」抓取密钥时间戳
+    private static volatile long sStreamSecretRetryAfter = 0L;      // 抓取失败后的重试时间
+    private static volatile FutureTask<String> sSecretRefreshTask = null; // 并发去重：进行中的抓取
+    private static final Object sSecretLock = new Object();
 
     // ---- channelId(网页参数) → extraId(API标识) 映射 ----
     // 大多数频道的 channelId 与 extraId 一致，仅少数不同
@@ -77,6 +95,16 @@ public class JstvParser extends BaseParser {
             Pattern.compile("channelId=(\\d+)");
     private static final Pattern VALID_STREAM_PAT =
             Pattern.compile("https?://[^/]*jstv\\.com/.+\\.m3u8", Pattern.CASE_INSENSITIVE);
+
+    // ---- 密钥自动抓取正则 ----
+    private static final Pattern APP_JS_PAT =
+            Pattern.compile("assets/js/app\\.[a-f0-9]+\\.js");
+    private static final Pattern CHUNK_HASH_PAT =
+            Pattern.compile("assets/js/\"\\+e\\+\"\\.([a-f0-9]+)\\.js");
+    private static final Pattern CHUNK_ID_PAT =
+            Pattern.compile("\\.e\\((\\d+)\\)");
+    private static final Pattern OBF_STRING_PAT =
+            Pattern.compile("[\"']([A-Za-z0-9+/=]{20,80})[\"']");
 
     // ---- 数据结构 ----
 
@@ -123,6 +151,12 @@ public class JstvParser extends BaseParser {
             sChannelCacheExpiresAt = 0;
             sChannelRetryAfter = 0;
         }
+        synchronized (sSecretLock) {
+            sStreamSecret = null;
+            sStreamSecretCheckedAt = 0;
+            sStreamSecretRetryAfter = 0;
+            sSecretRefreshTask = null;
+        }
         LogUtil.i(TAG + ": cache cleared");
     }
 
@@ -140,15 +174,18 @@ public class JstvParser extends BaseParser {
                     String channelId = extractChannelId(url);
                     LogUtil.i(TAG + ": parsing channelId=" + channelId);
 
+                    // 并行触发签名密钥刷新（与鉴权、频道列表请求重叠，降低首次解析延迟）
+                    ensureStreamSecretAsync(userAgent);
+
                     // Step1: 获取 JWT 令牌
-                    String token = getAccessToken();
+                    String token = getAccessToken(userAgent);
                     if (token == null || token.isEmpty()) {
                         callback.onError("荔枝网鉴权失败，无法获取访问令牌");
                         return;
                     }
 
                     // Step2: 获取频道列表（缓存）
-                    List<ChannelInfo> channels = getCachedChannelList(token);
+                    List<ChannelInfo> channels = getCachedChannelList(token, userAgent);
                     if (channels == null || channels.isEmpty()) {
                         callback.onError("荔枝网频道列表为空");
                         return;
@@ -186,12 +223,11 @@ public class JstvParser extends BaseParser {
                     }
 
                     // Step4: 对取流地址签名
-                    String signedUrl = signStreamUrl(channel.rawUrl);
+                    String signedUrl = signStreamUrl(channel.rawUrl, userAgent);
 
                     // Step5: 构建防盗链请求头
                     Map<String, String> playHeaders = new HashMap<>();
-                    playHeaders.put("User-Agent",
-                            userAgent != null && !userAgent.isEmpty() ? userAgent : UA_MOBILE);
+                    playHeaders.put("User-Agent", resolveUa(userAgent));
                     playHeaders.put("Origin", "https://live.jstv.com");
                     playHeaders.put("Referer", "https://live.jstv.com/");
                     playHeaders.put("Accept", "*/*");
@@ -227,7 +263,7 @@ public class JstvParser extends BaseParser {
      * 获取匿名 Web JWT，带缓存。
      * 令牌失败不反复重试：短时间内只报错。
      */
-    private static String getAccessToken() throws Exception {
+    private static String getAccessToken(String userAgent) throws Exception {
         long now = System.currentTimeMillis();
 
         synchronized (sTokenLock) {
@@ -242,7 +278,7 @@ public class JstvParser extends BaseParser {
         AuthResult authReq = buildAuthRequest(now, randomHex(16));
 
         Map<String, String> headers = new HashMap<>();
-        headers.put("User-Agent", UA_MOBILE);
+        headers.put("User-Agent", resolveUa(userAgent));
         headers.put("Content-Type", "application/json");
         headers.put("Accept", "application/json");
 
@@ -380,7 +416,7 @@ public class JstvParser extends BaseParser {
     /**
      * 获取频道列表（带缓存）
      */
-    private static List<ChannelInfo> getCachedChannelList(String token) throws Exception {
+    private static List<ChannelInfo> getCachedChannelList(String token, String userAgent) throws Exception {
         long now = System.currentTimeMillis();
 
         if (sCachedChannels != null && sChannelCacheExpiresAt > now) {
@@ -396,7 +432,7 @@ public class JstvParser extends BaseParser {
                 return sCachedChannels;
             }
 
-            List<ChannelInfo> channels = fetchChannelList(token);
+            List<ChannelInfo> channels = fetchChannelList(token, userAgent);
             sCachedChannels = channels;
             sChannelCacheExpiresAt = now + CHANNEL_CACHE_TTL_MS;
             sChannelRetryAfter = 0;
@@ -405,9 +441,9 @@ public class JstvParser extends BaseParser {
         }
     }
 
-    private static List<ChannelInfo> fetchChannelList(String token) throws Exception {
+    private static List<ChannelInfo> fetchChannelList(String token, String userAgent) throws Exception {
         Map<String, String> headers = new HashMap<>();
-        headers.put("User-Agent", UA_MOBILE);
+        headers.put("User-Agent", resolveUa(userAgent));
         headers.put("Accept", "application/json");
         headers.put("Authorization", "Bearer " + token);
 
@@ -468,9 +504,9 @@ public class JstvParser extends BaseParser {
     /**
      * 对原始取流地址进行短效签名（约 3 分钟有效）。
      * 1. 替换 CDN 域名为 litchi-play-encrypted-site.jstv.com
-     * 2. 计算 txSecret = MD5(STREAM_SECRET + 流名 + txTime)
+     * 2. 计算 txSecret = MD5(密钥 + 流名 + txTime)，密钥取自动抓取结果
      */
-    private static String signStreamUrl(String rawUrl) throws Exception {
+    private static String signStreamUrl(String rawUrl, String userAgent) throws Exception {
         java.net.URL urlObj = new java.net.URL(rawUrl);
         String path = urlObj.getPath();
         String streamName = path.substring(path.lastIndexOf('/') + 1)
@@ -479,7 +515,8 @@ public class JstvParser extends BaseParser {
         long now = System.currentTimeMillis();
         String txTime = Long.toHexString(now / 1000 + STREAM_TTL_SECONDS);
 
-        String signInput = STREAM_SECRET + streamName + txTime;
+        String secret = getStreamSecret(userAgent);
+        String signInput = secret + streamName + txTime;
         MessageDigest md = MessageDigest.getInstance("MD5");
         byte[] digest = md.digest(signInput.getBytes("UTF-8"));
         StringBuilder hex = new StringBuilder();
@@ -498,6 +535,167 @@ public class JstvParser extends BaseParser {
         signed.append("?txSecret=").append(txSecret);
         signed.append("&txTime=").append(txTime);
         return signed.toString();
+    }
+
+    // ======================== 密钥自动抓取 ========================
+
+    /**
+     * 拉取纯文本资源。HttpFetcher 已支持 gzip 解压与最多 5 次重定向。
+     */
+    private static String httpGetText(String url, String userAgent) {
+        try {
+            Map<String, String> headers = new HashMap<>();
+            headers.put("User-Agent", resolveUa(userAgent));
+            HttpFetcher.Response resp = HttpFetcher.get(url, headers);
+            if (resp.code == 200) return resp.bodyAsString();
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * 官网把密钥混淆成 "prefix + base64(密钥) + suffix" 形态，例如
+     *   "L3EN4P" + base64("enxG6z6eEWFWKHeTFNQ8") + "QOW"
+     * 从整串里找出「能 base64 解码为字母数字串」的最长子串即为密钥。
+     */
+    private static String decodeObfuscatedSecret(String obf) {
+        if (obf == null || obf.isEmpty()) return null;
+        List<String> candidates = new ArrayList<>();
+        int len = obf.length();
+        for (int end = 24; end <= len; end++) {
+            if (obf.charAt(end - 1) != '=') continue;
+            for (int start = 0; start <= end - 24; start++) {
+                String sub = obf.substring(start, end);
+                if (sub.length() % 4 != 0) continue;
+                if (!sub.matches("[A-Za-z0-9+/]+={0,2}")) continue;
+                int eq = sub.indexOf('=');
+                if (eq != -1 && eq < sub.length() - 2) continue;
+                String dec = null;
+                try {
+                    dec = new String(Base64.decode(sub, Base64.DEFAULT), "UTF-8");
+                } catch (Exception ignored) {
+                }
+                if (dec != null && dec.matches("[A-Za-z0-9]{16,48}")) {
+                    candidates.add(dec);
+                }
+            }
+        }
+        if (candidates.isEmpty()) return null;
+        String best = null;
+        for (String c : candidates) {
+            if (best == null || c.length() > best.length()) best = c;
+        }
+        return best;
+    }
+
+    /**
+     * 在取流逻辑 chunk 里，围绕 encodeLiveUrl 查找混淆密钥并解码。
+     */
+    private static String extractSecretFromChunk(String js) {
+        int idx = js.indexOf("encodeLiveUrl");
+        if (idx < 0) return null;
+        int start = Math.max(0, idx - 2500);
+        int end = Math.min(js.length(), idx + 500);
+        String win = js.substring(start, end);
+        Matcher m = OBF_STRING_PAT.matcher(win);
+        while (m.find()) {
+            String secret = decodeObfuscatedSecret(m.group(1));
+            if (secret != null) return secret;
+        }
+        return null;
+    }
+
+    /**
+     * 三步自动抓取密钥：首页 HTML -> app 入口 JS -> 取流逻辑 chunk。
+     */
+    private static String fetchStreamSecret(String userAgent) {
+        try {
+            String pageHtml = httpGetText(PAGE_URL, userAgent);
+            if (pageHtml == null) return null;
+
+            Matcher appMatcher = APP_JS_PAT.matcher(pageHtml);
+            if (!appMatcher.find()) return null;
+            String appRef = appMatcher.group();
+
+            String appJs = httpGetText(PAGE_URL + appRef, userAgent);
+            if (appJs == null) return null;
+
+            Matcher hashMatcher = CHUNK_HASH_PAT.matcher(appJs);
+            Matcher chunkIdMatcher = CHUNK_ID_PAT.matcher(appJs);
+            if (!hashMatcher.find() || !chunkIdMatcher.find()) return null;
+            String hash = hashMatcher.group(1);
+            String chunkId = chunkIdMatcher.group(1);
+
+            String chunkUrl = PAGE_URL + "assets/js/" + chunkId + "." + hash + ".js";
+            String chunkJs = httpGetText(chunkUrl, userAgent);
+            if (chunkJs == null) return null;
+
+            return extractSecretFromChunk(chunkJs);
+        } catch (Exception e) {
+            LogUtil.e(TAG + ": fetch stream secret failed", e);
+            return null;
+        }
+    }
+
+    /**
+     * 启动/复用后台刷新，返回可等待的 FutureTask（密钥仍新鲜时返回 null，直接使用 sStreamSecret）。
+     */
+    private static FutureTask<String> ensureStreamSecretAsync(final String userAgent) {
+        long now = System.currentTimeMillis();
+        synchronized (sSecretLock) {
+            // 密钥仍新鲜，直接用现有值
+            if (sStreamSecret != null && sStreamSecretCheckedAt != 0
+                    && now - sStreamSecretCheckedAt < SECRET_CACHE_TTL_MS) {
+                return null;
+            }
+            // 失败冷却期内：有旧密钥则沿用，否则由 getStreamSecret 报错
+            if (sStreamSecretRetryAfter > now) {
+                return null;
+            }
+            if (sSecretRefreshTask != null && !sSecretRefreshTask.isDone()) {
+                return sSecretRefreshTask;
+            }
+            FutureTask<String> task = new FutureTask<>(new Callable<String>() {
+                @Override
+                public String call() {
+                    String fetched = fetchStreamSecret(userAgent);
+                    if (fetched != null) {
+                        sStreamSecret = fetched;
+                        sStreamSecretCheckedAt = System.currentTimeMillis();
+                        sStreamSecretRetryAfter = 0;
+                        LogUtil.i(TAG + ": stream secret refreshed from cloud");
+                    } else {
+                        // 失败只设置短冷却重试，不更新 CheckedAt，避免失败被缓存 30 分钟
+                        sStreamSecretRetryAfter = System.currentTimeMillis() + SECRET_RETRY_MS;
+                        LogUtil.w(TAG + ": stream secret fetch failed, retry in "
+                                + (SECRET_RETRY_MS / 1000) + "s");
+                    }
+                    return sStreamSecret;
+                }
+            });
+            sSecretRefreshTask = task;
+            new Thread(task, "jstv-secret-refresh").start();
+            return task;
+        }
+    }
+
+    /**
+     * 等待密钥就绪（含冷却期与并发去重）。解析运行在线程池，允许短暂阻塞。
+     * 抓取失败且无可用密钥时抛错，让播放直接失败以暴露问题。
+     */
+    private static String getStreamSecret(String userAgent) throws Exception {
+        FutureTask<String> task = ensureStreamSecretAsync(userAgent);
+        if (task != null) {
+            try {
+                String fetched = task.get();
+                if (fetched != null) return fetched;
+            } catch (Exception ignored) {
+            }
+        }
+        if (sStreamSecret == null) {
+            throw new Exception("荔枝网签名密钥抓取失败，暂无可用密钥");
+        }
+        return sStreamSecret;
     }
 
     // ======================== 辅助方法 ========================

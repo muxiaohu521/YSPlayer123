@@ -130,7 +130,7 @@ public class HnntvParser extends BaseParser {
 
         try {
             Map<String, String> headers = new HashMap<>();
-            headers.put("User-Agent", userAgent != null ? userAgent : UA_MOBILE);
+            headers.put("User-Agent", resolveUa(userAgent));
             headers.put("Accept", "application/json, text/plain, */*");
             headers.put("Origin", "https://www.hnntv.cn");
             headers.put("Referer", "https://www.hnntv.cn/");

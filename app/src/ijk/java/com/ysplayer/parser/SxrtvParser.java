@@ -107,7 +107,6 @@ public class SxrtvParser extends BaseParser {
                             "https://www.sxrtv.com/", userAgent);
                     headers.put("Referer", "https://www.sxrtv.com/tv/index.shtml");
                     headers.put("Origin", "https://www.sxrtv.com");
-                    headers.put("User-Agent", userAgent != null ? userAgent : UA_MOBILE);
 
                     List<ParseResult.QualityOption> options = new ArrayList<>();
                     options.add(new ParseResult.QualityOption(streamUrl, "720P", 1280, 720));
@@ -193,7 +192,7 @@ public class SxrtvParser extends BaseParser {
                 + "?t=" + tsHex + "&token=" + token;
 
         Map<String, String> headers = new HashMap<>();
-        headers.put("User-Agent", userAgent != null ? userAgent : UA_MOBILE);
+        headers.put("User-Agent", resolveUa(userAgent));
         headers.put("Accept", "application/json, text/plain, */*");
         headers.put("Referer", "https://www.sxrtv.com/tv/index.shtml");
         headers.put("Origin", "https://www.sxrtv.com");

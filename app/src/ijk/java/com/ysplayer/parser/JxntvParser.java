@@ -10,6 +10,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.FutureTask;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -28,11 +30,27 @@ public class JxntvParser extends BaseParser {
     private static final String DOMAIN = "jxntv.cn";
     private static final String AUTH_API = "https://cdnauth.jxgdw.com/liveauth/pc";
     private static final String MEDIA_BASE = "https://yun-live.jxtvcn.com.cn/live-jxtv/";
-    private static final String AUTH_SALT = "gXmNaQROStYfd";
+    // 【测试】硬编码兜底值已注释：抓取失败时盐为 null，签名直接失效以便暴露问题。
+    // private static final String AUTH_SALT = "gXmNaQROStYfd";
     private static final String ETAG_CHARS = "ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678oOLl9gqVvUuI1";
     private static final long TOKEN_TTL_MS = 45 * 1000L;
     private static final Pattern ROUTE_PAT =
             Pattern.compile("/#/([a-z0-9_]+)", Pattern.CASE_INSENSITIVE);
+
+    // ---- 签名盐自动抓取 ----
+    private static final String PAGE_URL = "https://www.jxntv.cn/live/";
+    private static final long SALT_CACHE_TTL_MS = 30 * 60 * 1000L; // 盐缓存 30 分钟
+    private static final Pattern INDEX_JS_PAT =
+            Pattern.compile("/assets/index-([A-Za-z0-9_-]+)\\.js");
+    private static final Pattern CHARSET_PAT =
+            Pattern.compile("\"([A-Za-z0-9]{55,70})\"");
+    private static final Pattern SALT_IDX_PAT =
+            Pattern.compile("\\[\\s*(\\d+(?:\\s*,?\\s*\\d+){10,20})\\s*\\]\\s*\\[");
+
+    private static volatile String sAuthSalt = null;              // 当前生效盐（仅自动抓取成功后更新；测试期无硬编码兜底）
+    private static volatile long sAuthSaltCheckedAt = 0L;         // 上次抓取盐的时间戳
+    private static volatile FutureTask<String> sSaltRefreshTask = null; // 并发去重：进行中的抓取
+    private static final Object sSaltLock = new Object();
 
     private static class ChannelDef {
         final String route;
@@ -71,7 +89,14 @@ public class JxntvParser extends BaseParser {
 
     @Override public String getName() { return "江西网络广播电视台"; }
 
-    @Override public void clearCache() { sCache.clear(); }
+    @Override public void clearCache() {
+        sCache.clear();
+        synchronized (sSaltLock) {
+            sAuthSaltCheckedAt = 0;
+            sSaltRefreshTask = null;
+        }
+        LogUtil.i(TAG + ": cache cleared");
+    }
 
     @Override public boolean canParse(String url) { return url != null && url.contains(DOMAIN); }
 
@@ -88,6 +113,9 @@ public class JxntvParser extends BaseParser {
                         def = CHANNEL_BY_ROUTE.get("jxtv1");
                         LogUtil.i(TAG + ": route not recognized, defaulting to " + def.name);
                     }
+
+                    // 并行刷新签名盐（与鉴权请求重叠，降低首次解析延迟）
+                    ensureAuthSaltAsync();
 
                     String streamUrl = getSignedStream(def, userAgent);
                     if (streamUrl == null) {
@@ -115,7 +143,7 @@ public class JxntvParser extends BaseParser {
 
     private void initDeviceUuid(String userAgent) {
         if (sDeviceUuid != null) return;
-        String ua = userAgent != null ? userAgent : UA_MOBILE;
+        String ua = resolveUa(userAgent);
         sDeviceUuid = md5("jxntv:" + ua).substring(0, 12);
     }
 
@@ -129,7 +157,7 @@ public class JxntvParser extends BaseParser {
             String etag = makeEtag();
             String uuid = sDeviceUuid != null ? sDeviceUuid : "000000000000";
 
-            String authorization = md5(timestamp + def.streamName + etag + AUTH_SALT);
+            String authorization = md5(timestamp + def.streamName + etag + getAuthSalt());
 
             JSONObject body = new JSONObject();
             body.put("t", timestamp);
@@ -137,7 +165,7 @@ public class JxntvParser extends BaseParser {
             body.put("uuid", uuid);
 
             Map<String, String> headers = new HashMap<>();
-            headers.put("User-Agent", userAgent != null ? userAgent : UA_MOBILE);
+            headers.put("User-Agent", resolveUa(userAgent));
             headers.put("Accept", "application/json, text/plain, */*");
             headers.put("Content-Type", "application/json");
             headers.put("Origin", "https://www.jxntv.cn");
@@ -173,6 +201,102 @@ public class JxntvParser extends BaseParser {
             LogUtil.w(TAG + ": " + def.name + " 鉴权失败: " + e.getMessage());
             return null;
         }
+    }
+
+    // ======================== 签名盐自动抓取 ========================
+
+    /**
+     * 拉取纯文本资源。HttpFetcher 已支持 gzip 解压与最多 5 次重定向。
+     */
+    private static String httpGetText(String url) {
+        try {
+            HttpFetcher.Response resp = HttpFetcher.get(url, null);
+            if (resp.code == 200) return resp.bodyAsString();
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * 三步自动抓取签名盐：首页 HTML -> 入口 JS -> 唯一字符集 + 唯一索引数组逐位拼接。
+     */
+    private static String fetchAuthSalt() {
+        try {
+            String html = httpGetText(PAGE_URL);
+            if (html == null) return null;
+
+            Matcher idxMatcher = INDEX_JS_PAT.matcher(html);
+            if (!idxMatcher.find()) return null;
+            String indexJs = httpGetText(PAGE_URL + "assets/index-" + idxMatcher.group(1) + ".js");
+            if (indexJs == null) return null;
+
+            Matcher charsetMatcher = CHARSET_PAT.matcher(indexJs);
+            if (!charsetMatcher.find()) return null;
+            String charset = charsetMatcher.group(1);
+
+            Matcher idxArrMatcher = SALT_IDX_PAT.matcher(indexJs);
+            if (!idxArrMatcher.find()) return null;
+            String[] tokens = idxArrMatcher.group(1).split("[,\\s]+");
+
+            StringBuilder salt = new StringBuilder();
+            for (String token : tokens) {
+                if (token.isEmpty()) continue;
+                int idx = Integer.parseInt(token.trim());
+                if (idx >= 0 && idx < charset.length()) {
+                    salt.append(charset.charAt(idx));
+                }
+            }
+            return salt.toString();
+        } catch (Exception e) {
+            LogUtil.e(TAG + ": fetch auth salt failed", e);
+            return null;
+        }
+    }
+
+    /**
+     * 启动/复用后台刷新，返回可等待的 FutureTask（盐仍新鲜时返回 null，直接使用 sAuthSalt）。
+     */
+    private static FutureTask<String> ensureAuthSaltAsync() {
+        long now = System.currentTimeMillis();
+        synchronized (sSaltLock) {
+            if (sAuthSaltCheckedAt != 0 && now - sAuthSaltCheckedAt < SALT_CACHE_TTL_MS) {
+                return null;
+            }
+            if (sSaltRefreshTask != null && !sSaltRefreshTask.isDone()) {
+                return sSaltRefreshTask;
+            }
+            FutureTask<String> task = new FutureTask<>(new Callable<String>() {
+                @Override
+                public String call() {
+                    String fetched = fetchAuthSalt();
+                    if (fetched != null) {
+                        sAuthSalt = fetched;
+                        LogUtil.i(TAG + ": auth salt refreshed from cloud");
+                    } else {
+                        LogUtil.w(TAG + ": auth salt fetch failed, keep current value");
+                    }
+                    sAuthSaltCheckedAt = System.currentTimeMillis();
+                    return sAuthSalt;
+                }
+            });
+            sSaltRefreshTask = task;
+            new Thread(task, "jxntv-salt-refresh").start();
+            return task;
+        }
+    }
+
+    /**
+     * 等待盐就绪（含冷却期与并发去重）。解析运行在线程池，允许短暂阻塞。
+     */
+    private static String getAuthSalt() {
+        FutureTask<String> task = ensureAuthSaltAsync();
+        if (task != null) {
+            try {
+                return task.get();
+            } catch (Exception ignored) {
+            }
+        }
+        return sAuthSalt;
     }
 
     private String makeEtag() {

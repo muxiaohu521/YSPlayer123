@@ -75,9 +75,7 @@ public class GxtvParser extends BaseParser {
                     apiHeaders.put("Content-Type",
                             "application/x-www-form-urlencoded");
                     apiHeaders.put("Referer", "https://tv.gxtv.cn/");
-                    apiHeaders.put("User-Agent",
-                            userAgent != null && !userAgent.isEmpty()
-                                    ? userAgent : UA_MOBILE);
+                    apiHeaders.put("User-Agent", resolveUa(userAgent));
                     apiHeaders.put("Accept", "application/json");
 
                     HttpFetcher.Response apiResp = HttpFetcher.post(API_URL,
@@ -165,9 +163,7 @@ public class GxtvParser extends BaseParser {
                             m3u8Url.lastIndexOf('/') + 1);
                     Map<String, String> cdnHeaders = new HashMap<>();
                     cdnHeaders.put("Referer", "https://tv.gxtv.cn/");
-                    cdnHeaders.put("User-Agent",
-                            userAgent != null && !userAgent.isEmpty()
-                                    ? userAgent : UA_MOBILE);
+                    cdnHeaders.put("User-Agent", resolveUa(userAgent));
 
                     HttpFetcher.Response m3u8Resp = HttpFetcher.get(m3u8Url,
                             cdnHeaders);

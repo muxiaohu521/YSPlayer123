@@ -16,6 +16,10 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.FutureTask;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.crypto.Cipher;
 
@@ -35,9 +39,16 @@ public class KankanewsParser extends BaseParser {
             "https://kapi.kankanews.com/content/pc/tv/programs";
     private static final String PROGRAM_DETAIL_URL =
             "https://kapi.kankanews.com/content/pc/tv/program/detail";
-    private static final String SIGN_SALT = "28c8edde3d61a0411511d3b1866f0636";
+    // private static final String SIGN_SALT = "28c8edde3d61a0411511d3b1866f0636";
     private static final String APP_VERSION = "2.45.2";
     private static final String API_VERSION = "v1";
+    // 签名盐云端抓取：首页 HTML -> app.<version>.js，盐以 +="<32位hex>" 形式出现
+    private static final String PAGE_URL = "https://live.kankanews.com/huikan/";
+    private static final long SIGN_SALT_CACHE_TTL_MS = 30 * 60 * 1000L;
+    private static final Pattern APP_JS_PAT =
+            Pattern.compile("(/_knews_nuxt/js/app\\.v[\\d.]+\\.js)");
+    private static final Pattern SIGN_SALT_PAT =
+            Pattern.compile("\\+=\"([0-9a-f]{32})\"");
     private static final String NONCE_ALPHABET =
             "0123456789abcdefghijklmnopqrstuvwxyz";
     private static final String UUID_ALPHABET =
@@ -47,6 +58,8 @@ public class KankanewsParser extends BaseParser {
     private static final long EXPIRY_SKEW_MS = 5 * 60 * 1000L;
     private static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
+    // 注意：官网把 UA 的 MD5 写进播放 token，验签 UA 与随后代理分片 UA 必须一致，
+    // 因此统一经 resolveUa(userAgent) 取同一 UA，避免混用导致 CDN 403。
     private static final String STREAM_PUBLIC_KEY_PEM =
             "-----BEGIN PUBLIC KEY-----\n" +
             "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDP5hzPUW5RFeE2xBT1ERB3hHZI\n" +
@@ -79,10 +92,31 @@ public class KankanewsParser extends BaseParser {
         long retryAt;
     }
 
+    // 官网明确停供（版权屏蔽/无当前节目/无地址）时不能沿用旧 token；
+    // 只有临时网络故障才允许复用尚有效的缓存。
+    private static class ChannelUnavailableError extends Exception {
+        ChannelUnavailableError(String message) { super(message); }
+    }
+
+    private static class ProgramAddress {
+        final String liveAddress;
+        final long programEnd;
+        ProgramAddress(String liveAddress, long programEnd) {
+            this.liveAddress = liveAddress;
+            this.programEnd = programEnd;
+        }
+    }
+
     private static final Map<String, DetailCache> sDetailCache = new HashMap<>();
     private static final Map<String, LocalHttpProxy> sProxies = new HashMap<>();
     private static PublicKey sPublicKey;
     private static String sDeviceUuid;
+
+    // 签名盐运行时状态：仅自动抓取成功后更新，测试期无硬编码兜底
+    private static volatile String sSignSalt = null;
+    private static volatile long sSignSaltCheckedAt = 0L;
+    private static volatile FutureTask<String> sSignSaltRefreshTask = null;
+    private static final Object sSignSaltLock = new Object();
 
     @Override public String getName() { return "看看新闻(SMG)"; }
     @Override public void clearCache() {
@@ -90,6 +124,10 @@ public class KankanewsParser extends BaseParser {
             stopProxy(id);
         }
         sDetailCache.clear();
+        synchronized (sSignSaltLock) {
+            sSignSaltCheckedAt = 0;
+            sSignSaltRefreshTask = null;
+        }
     }
     @Override public boolean canParse(String url) { return url != null && url.contains(DOMAIN); }
 
@@ -99,6 +137,7 @@ public class KankanewsParser extends BaseParser {
             @Override
             public void run() {
                 try {
+                    ensureSignSaltAsync();
                     ChannelDef def = findChannel(url);
                     if (def == null) {
                         def = CHANNELS[0];
@@ -113,20 +152,28 @@ public class KankanewsParser extends BaseParser {
                         return;
                     }
 
-                    java.net.URL parsed = new java.net.URL(streamUrl);
-                    String cdnHost = parsed.getHost();
-                    String m3u8Base = streamUrl.substring(0,
-                            streamUrl.lastIndexOf('/') + 1);
-
                     Map<String, String> cdnHeaders = new HashMap<>();
-                    cdnHeaders.put("User-Agent", userAgent != null && !userAgent.isEmpty()
-                            ? userAgent : UA_MOBILE);
+                    cdnHeaders.put("User-Agent", resolveUa(userAgent));
                     cdnHeaders.put("Referer", "https://live.kankanews.com/huikan/");
                     cdnHeaders.put("Origin", "https://live.kankanews.com");
                     cdnHeaders.put("Accept", "application/vnd.apple.mpegurl, */*");
 
+                    // 部分频道（如上海都市）的流地址是 master 变体列表，其内部媒体
+                    // 播放列表的分片为相对路径。若不先下钻到真正的媒体播放列表，本地
+                    // 代理会把这些相对分片解析到 /seg/ 目录而 404。master 则下钻到
+                    // media，本身就是 media 播放列表时原样返回（其余频道不受影响）。
+                    String mediaUrl = resolveMediaPlaylist(streamUrl, cdnHeaders);
+                    if (mediaUrl == null) {
+                        mediaUrl = streamUrl;
+                    }
+
+                    java.net.URL parsed = new java.net.URL(mediaUrl);
+                    String cdnHost = parsed.getHost();
+                    String m3u8Base = mediaUrl.substring(0,
+                            mediaUrl.lastIndexOf('/') + 1);
+
                     final ChannelDef finalDef = def;
-                    LocalHttpProxy proxy = new LocalHttpProxy(cdnHost, streamUrl,
+                    LocalHttpProxy proxy = new LocalHttpProxy(cdnHost, mediaUrl,
                             m3u8Base, cdnHeaders);
                     proxy.setEntryRefresher(new LocalHttpProxy.EntryRefresher() {
                         @Override
@@ -135,6 +182,10 @@ public class KankanewsParser extends BaseParser {
                                     + finalDef.name);
                             String newUrl = getStreamUrl(finalDef, userAgent, true);
                             if (newUrl != null) {
+                                String newMedia = resolveMediaPlaylist(newUrl, cdnHeaders);
+                                if (newMedia != null) {
+                                    newUrl = newMedia;
+                                }
                                 LogUtil.i(TAG + ": got new SMG URL for "
                                         + finalDef.name);
                             }
@@ -194,6 +245,47 @@ public class KankanewsParser extends BaseParser {
         return CHANNELS[0];
     }
 
+    /**
+     * 下钻到真正的媒体播放列表（不含 #EXT-X-STREAM-INF 的层级）。
+     * master 变体列表会逐层跟随变体 URI（相对路径按当前 URL 目录拼接），
+     * 本身已是媒体播放列表时原样返回；请求失败或层级过深返回 null。
+     */
+    private static String resolveMediaPlaylist(String m3u8Url,
+                                                Map<String, String> headers) {
+        String current = m3u8Url;
+        for (int depth = 0; depth < 4; depth++) {
+            final HttpFetcher.Response resp;
+            try {
+                resp = HttpFetcher.get(current, headers);
+            } catch (IOException e) {
+                LogUtil.w(TAG + ": media playlist resolve failed: " + e.getMessage());
+                return null;
+            }
+            if (resp.code != 200) return null;
+            String text = resp.bodyAsString();
+            // 媒体播放列表不含 #EXT-X-STREAM-INF，已是可直接播放的层级
+            if (!text.contains("#EXT-X-STREAM-INF")) return current;
+            String variant = firstNonCommentLine(text);
+            if (variant == null) return null;
+            if (!variant.startsWith("http://") && !variant.startsWith("https://")) {
+                int slash = current.lastIndexOf('/');
+                if (slash < 0) return null;
+                variant = current.substring(0, slash + 1) + variant;
+            }
+            current = variant;
+        }
+        return null;
+    }
+
+    private static String firstNonCommentLine(String m3u8) {
+        if (m3u8 == null) return null;
+        for (String line : m3u8.split("\r?\n")) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty() && !trimmed.startsWith("#")) return trimmed;
+        }
+        return null;
+    }
+
     private static String getStreamUrl(ChannelDef def, String userAgent,
                                         boolean forceRefresh) {
         long now = System.currentTimeMillis();
@@ -210,6 +302,12 @@ public class KankanewsParser extends BaseParser {
             DetailCache fresh = fetchDetail(def, userAgent, now);
             sDetailCache.put(def.id, fresh);
             return fresh.streamUrl;
+        } catch (ChannelUnavailableError e) {
+            // 官网明确停供（版权屏蔽/无当前节目/无地址）时不能沿用旧 token，直接失败；
+            // 只有临时网络故障才允许复用尚有效的缓存。
+            LogUtil.w(TAG + ": " + def.name + " unavailable: " + e.getMessage());
+            sDetailCache.remove(def.id);
+            return null;
         } catch (Exception e) {
             LogUtil.w(TAG + ": " + def.name + " fetch failed: " + e.getMessage());
             if (!forceRefresh) {
@@ -230,7 +328,7 @@ public class KankanewsParser extends BaseParser {
 
         Map<String, String> signedHeaders = buildSignedHeaders(
                 "channel_id", def.id, nonce, uuid, now);
-        signedHeaders.put("User-Agent", userAgent != null ? userAgent : UA_MOBILE);
+        signedHeaders.put("User-Agent", resolveUa(userAgent));
 
         HttpFetcher.Response resp = HttpFetcher.get(
                 CHANNEL_DETAIL_URL + "?channel_id=" + def.id, signedHeaders);
@@ -245,20 +343,19 @@ public class KankanewsParser extends BaseParser {
         if (result == null) throw new Exception("no result in API response");
 
         String liveAddress = null;
+        long programEnd = 0L;
         if (result.optInt("is_exist_program", 0) == 1) {
-            try {
-                liveAddress = fetchProgramAddress(def, uuid, now);
-            } catch (Exception progEx) {
-                LogUtil.w(TAG + ": program schedule failed ("
-                        + progEx.getMessage() + "), falling back to live_address");
-                liveAddress = result.optString("live_address", "");
-            }
+            // 官网有节目单的频道已不再从频道详情发放地址，需查当前节目读
+            // program/detail.channel_info.live_address。此处不回退频道详情的空地址。
+            ProgramAddress pa = fetchProgramAddress(def, uuid, userAgent, now);
+            liveAddress = pa.liveAddress;
+            programEnd = pa.programEnd;
         } else {
             liveAddress = result.optString("live_address", "");
         }
 
         if (liveAddress == null || liveAddress.isEmpty()) {
-            throw new Exception("no live_address in API response");
+            throw new ChannelUnavailableError("官网当前未提供直播地址，请稍后重试");
         }
 
         String decrypted = decryptLiveAddress(liveAddress);
@@ -267,18 +364,22 @@ public class KankanewsParser extends BaseParser {
         long tokenExpiry = streamExpiry(decrypted);
         long apiTtlMs = Math.max(30 * 1000L,
                 result.optInt("limit_time", 180) * 1000L - 30 * 1000L);
+        // 有效期同时受 token 过期时间与节目结束时间约束，避免跨节目沿用旧流。
+        long validUntil = Math.min(tokenExpiry > 0 ? tokenExpiry : now + 30 * 60 * 1000L,
+                programEnd > 0 ? programEnd : Long.MAX_VALUE);
 
         DetailCache cache = new DetailCache();
         cache.streamUrl = decrypted;
-        cache.validUntil = tokenExpiry > 0 ? tokenExpiry : now + 30 * 60 * 1000L;
-        cache.refreshAt = now + Math.min(DEFAULT_REFRESH_MS, apiTtlMs);
+        cache.validUntil = validUntil;
+        cache.refreshAt = Math.min(now + Math.min(DEFAULT_REFRESH_MS, apiTtlMs), validUntil);
         LogUtil.i(TAG + ": " + def.name + " URL valid until "
                 + (cache.validUntil - now) / 1000 + "s");
         return cache;
     }
 
-    private static String fetchProgramAddress(ChannelDef def,
-                                               String uuid, long now) throws Exception {
+    private static ProgramAddress fetchProgramAddress(ChannelDef def,
+                                                       String uuid, String userAgent,
+                                                       long now) throws Exception {
         java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd",
                 java.util.Locale.US);
         sdf.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Shanghai"));
@@ -288,7 +389,9 @@ public class KankanewsParser extends BaseParser {
         Map<String, String> progListHeaders = buildSignedHeadersMulti(
                 new String[][]{{"channel_id", def.id}, {"date", date}},
                 nonce, uuid, now);
-        progListHeaders.put("User-Agent", UA_MOBILE);
+        // 节目单/节目详情验签与随后代理分片必须用同一个 UA：
+        // 官网把 UA 的 MD5 写进播放 token，混用移动端 UA 会导致 CDN 403。
+        progListHeaders.put("User-Agent", resolveUa(userAgent));
 
         String programListUrl = PROGRAM_LIST_URL + "?channel_id=" + def.id + "&date=" + date;
         HttpFetcher.Response listResp = HttpFetcher.get(programListUrl, progListHeaders);
@@ -301,27 +404,29 @@ public class KankanewsParser extends BaseParser {
 
         JSONArray programs = listPayload.optJSONObject("result").optJSONArray("programs");
         if (programs == null || programs.length() == 0) {
-            throw new Exception("no programs in schedule");
+            throw new ChannelUnavailableError("官网节目单中没有当前正在播出的节目");
         }
 
+        // 与官网一致：直接取第一个落在当前时间窗口内的节目，再单独判断版权屏蔽。
         JSONObject currentProgram = null;
-        int shieldedCount = 0;
         for (int i = 0; i < programs.length(); i++) {
             JSONObject prog = programs.getJSONObject(i);
             long startMs = prog.optLong("start_time", 0) * 1000L;
             long endMs = prog.optLong("end_time", 0) * 1000L;
             if (startMs <= now && now < endMs) {
-                if (prog.optInt("is_shield", 0) == 1) {
-                    shieldedCount++;
-                    continue;
-                }
                 currentProgram = prog;
                 break;
             }
         }
         if (currentProgram == null) {
-            throw new Exception(shieldedCount > 0 ? "节目版权限制"
-                    : "no current program in schedule");
+            throw new ChannelUnavailableError("官网节目单中没有当前正在播出的节目");
+        }
+
+        long programEnd = currentProgram.optLong("end_time", 0) * 1000L;
+        if (currentProgram.optInt("is_shield", 0) == 1) {
+            throw new ChannelUnavailableError("当前节目「"
+                    + currentProgram.optString("name", "未命名")
+                    + "」因版权限制，官网暂停网络直播");
         }
 
         String programId = currentProgram.optString("id", "");
@@ -330,7 +435,7 @@ public class KankanewsParser extends BaseParser {
         String detailUrl = PROGRAM_DETAIL_URL + "?channel_program_id=" + programId;
         Map<String, String> detailHeaders = buildSignedHeaders(
                 "channel_program_id", programId, randomString(8, NONCE_ALPHABET), uuid, now);
-        detailHeaders.put("User-Agent", UA_MOBILE);
+        detailHeaders.put("User-Agent", resolveUa(userAgent));
 
         HttpFetcher.Response detailResp = HttpFetcher.get(detailUrl, detailHeaders);
         if (detailResp.code != 200) throw new Exception("program detail HTTP " + detailResp.code);
@@ -346,13 +451,102 @@ public class KankanewsParser extends BaseParser {
         JSONObject channelInfo = detailResult.optJSONObject("channel_info");
         if (channelInfo == null) throw new Exception("no channel_info in program detail");
 
-        if (!def.id.equals(channelInfo.optString("id", ""))) {
+        if (!def.id.equals(channelInfo.optString("id", ""))
+                || !def.id.equals(detailResult.optString("channel_id", ""))) {
             throw new Exception("program detail channel id mismatch");
         }
 
-        if (detailResult.optInt("is_shield", 0) == 1) throw new Exception("节目版权限制");
+        if (detailResult.optInt("is_shield", 0) == 1) {
+            throw new ChannelUnavailableError("当前节目「"
+                    + currentProgram.optString("name", "未命名")
+                    + "」因版权限制，官网暂停网络直播");
+        }
 
-        return channelInfo.optString("live_address", "");
+        return new ProgramAddress(channelInfo.optString("live_address", ""), programEnd);
+    }
+
+    // ======================== 签名盐自动抓取 ========================
+
+    /**
+     * 拉取纯文本资源。HttpFetcher 已支持 gzip 解压与最多 5 次重定向。
+     */
+    private static String httpGetText(String url) {
+        try {
+            HttpFetcher.Response resp = HttpFetcher.get(url, null);
+            if (resp.code == 200) return resp.bodyAsString();
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * 两步自动抓取签名盐：首页 HTML -> app.<version>.js，盐以 +="<32位hex>" 形式出现。
+     */
+    private static String fetchSignSalt() {
+        try {
+            String html = httpGetText(PAGE_URL);
+            if (html == null) return null;
+
+            Matcher jsMatcher = APP_JS_PAT.matcher(html);
+            if (!jsMatcher.find()) return null;
+            String appJsPath = jsMatcher.group(1);
+
+            String appJs = httpGetText("https://live.kankanews.com" + appJsPath);
+            if (appJs == null) return null;
+
+            Matcher saltMatcher = SIGN_SALT_PAT.matcher(appJs);
+            if (saltMatcher.find()) return saltMatcher.group(1);
+            return null;
+        } catch (Exception e) {
+            LogUtil.e(TAG + ": fetch sign salt failed", e);
+            return null;
+        }
+    }
+
+    /**
+     * 启动/复用后台刷新，返回可等待的 FutureTask（盐仍新鲜时返回 null，直接使用 sSignSalt）。
+     */
+    private static FutureTask<String> ensureSignSaltAsync() {
+        long now = System.currentTimeMillis();
+        synchronized (sSignSaltLock) {
+            if (sSignSaltCheckedAt != 0 && now - sSignSaltCheckedAt < SIGN_SALT_CACHE_TTL_MS) {
+                return null;
+            }
+            if (sSignSaltRefreshTask != null && !sSignSaltRefreshTask.isDone()) {
+                return sSignSaltRefreshTask;
+            }
+            FutureTask<String> task = new FutureTask<>(new Callable<String>() {
+                @Override
+                public String call() {
+                    String fetched = fetchSignSalt();
+                    if (fetched != null) {
+                        sSignSalt = fetched;
+                        LogUtil.i(TAG + ": sign salt refreshed from cloud");
+                    } else {
+                        LogUtil.w(TAG + ": sign salt fetch failed, keep current value");
+                    }
+                    sSignSaltCheckedAt = System.currentTimeMillis();
+                    return sSignSalt;
+                }
+            });
+            sSignSaltRefreshTask = task;
+            new Thread(task, "kankanews-salt-refresh").start();
+            return task;
+        }
+    }
+
+    /**
+     * 等待盐就绪（含冷却期与并发去重）。解析运行在线程池，允许短暂阻塞。
+     */
+    private static String getSignSalt() {
+        FutureTask<String> task = ensureSignSaltAsync();
+        if (task != null) {
+            try {
+                return task.get();
+            } catch (Exception ignored) {
+            }
+        }
+        return sSignSalt;
     }
 
     private static Map<String, String> buildSignedHeaders(String key, String value,
@@ -372,7 +566,8 @@ public class KankanewsParser extends BaseParser {
         for (String k : keys) {
             canonical.append(k).append("=").append(all.get(k)).append("&");
         }
-        canonical.append(SIGN_SALT);
+        String salt = getSignSalt();
+        canonical.append(salt == null ? "" : salt);
         String sign = md5(md5(canonical.toString()));
 
         Map<String, String> headers = new HashMap<>();
@@ -407,7 +602,8 @@ public class KankanewsParser extends BaseParser {
         for (String k : keys) {
             canonical.append(k).append("=").append(all.get(k)).append("&");
         }
-        canonical.append(SIGN_SALT);
+        String salt = getSignSalt();
+        canonical.append(salt == null ? "" : salt);
         String sign = md5(md5(canonical.toString()));
 
         Map<String, String> headers = new HashMap<>();

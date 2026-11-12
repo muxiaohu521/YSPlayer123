@@ -17,9 +17,13 @@ public abstract class BaseParser implements ChannelParser {
     private static final String TAG = "BaseParser";
     private static final ExecutorService sExecutor = Executors.newFixedThreadPool(4);
 
-    protected static final String UA_MOBILE =
-            "Mozilla/5.0 (Linux; Android 10; SM-G9600) AppleWebKit/537.36 "
-                    + "(KHTML, like Gecko) Chrome/97.0.4692.98 Mobile Safari/537.36";
+    /**
+     * 统一 UA 解析：UA 完全由项目 UA 机制（调用方传入的 userAgent）决定，
+     * 解析逻辑不保留任何兜底 UA。调用方（UserAgentPreset.fromId）保证传入值非空。
+     */
+    protected static String resolveUa(String userAgent) {
+        return userAgent;
+    }
 
     private static final Pattern M3U8_PATTERN =
             Pattern.compile("(https?://[^\"'\\s<>]{5,}\\.m3u8[^\"'\\s<>]*)",
@@ -32,18 +36,10 @@ public abstract class BaseParser implements ChannelParser {
         sExecutor.execute(task);
     }
 
-    protected Map<String, String> defaultHeaders(String referer) {
-        Map<String, String> h = new HashMap<>();
-        h.put("Referer", referer);
-        h.put("User-Agent", UA_MOBILE);
-        h.put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
-        return h;
-    }
-
     protected Map<String, String> defaultHeadersWithUA(String referer, String userAgent) {
         Map<String, String> h = new HashMap<>();
         h.put("Referer", referer);
-        h.put("User-Agent", userAgent != null && !userAgent.isEmpty() ? userAgent : UA_MOBILE);
+        h.put("User-Agent", resolveUa(userAgent));
         h.put("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
         return h;
     }

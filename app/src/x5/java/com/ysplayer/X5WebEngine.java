@@ -3,12 +3,19 @@ package com.ysplayer;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.ValueCallback;
 
+import com.tencent.smtt.export.external.extension.interfaces.IX5WebSettingsExtension;
+import com.tencent.smtt.export.external.extension.proxy.ProxyWebChromeClientExtension;
+import com.tencent.smtt.export.external.extension.proxy.ProxyWebViewClientExtension;
+import com.tencent.smtt.export.external.interfaces.ConsoleMessage;
 import com.tencent.smtt.export.external.interfaces.IX5WebChromeClient;
+import com.tencent.smtt.export.external.interfaces.MediaAccessPermissionsCallback;
+import com.tencent.smtt.export.external.interfaces.PermissionRequest;
 import com.tencent.smtt.export.external.interfaces.SslError;
 import com.tencent.smtt.export.external.interfaces.SslErrorHandler;
 import com.tencent.smtt.sdk.QbSdk;
@@ -146,6 +153,10 @@ public class X5WebEngine implements WebEngine {
         }
 
         wv.setFocusable(true);
+        wv.setBackgroundColor(Color.BLACK);
+
+        // X5 快速加载: 加载期间禁止加载图片, 页面完成后恢复
+        applyPicModel(wv, true);
 
         wv.setWebViewClient(new WebViewClient() {
             @Override
@@ -201,10 +212,8 @@ public class X5WebEngine implements WebEngine {
                 LogUtil.w(TAG + ": SSL error: " + error.getUrl()
                         + " code=" + error.getPrimaryError());
                 if (mStopExpected) return;
-                handler.cancel();
-                if (mCallback != null) {
-                    mCallback.onLoadError("SSL证书错误: " + error.getUrl());
-                }
+                // 参考 WebViewTvLive: 电视直播站点证书常见不规范, 放行以保证频道可用
+                handler.proceed();
             }
 
             @Override
@@ -219,6 +228,16 @@ public class X5WebEngine implements WebEngine {
                 if (mCallback != null) {
                     mCallback.onLoadError(description);
                 }
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view,
+                    com.tencent.smtt.export.external.interfaces.WebResourceRequest request,
+                    com.tencent.smtt.export.external.interfaces.WebResourceResponse response) {
+                LogUtil.w(TAG + ": onReceivedHttpError: status="
+                        + (response != null ? response.getStatusCode() : -1)
+                        + " url=" + (request != null && request.getUrl() != null
+                            ? request.getUrl().toString() : "null"));
             }
 
             @Override
@@ -264,6 +283,7 @@ public class X5WebEngine implements WebEngine {
             @Override
             public void onPageFinished(WebView view, String url) {
                 LogUtil.d(TAG + ": onPageFinished: " + url);
+                applyPicModel(view, false);
                 if (mStopExpected) {
                     mStopExpected = false;
                     return;
@@ -326,6 +346,77 @@ public class X5WebEngine implements WebEngine {
                 }
                 return super.getDefaultVideoPoster();
             }
+
+            @Override
+            public void onProgressChanged(WebView view, int progress) {
+                LogUtil.d(TAG + ": onProgressChanged: progress=" + progress
+                        + " url=" + view.getUrl());
+            }
+
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage msg) {
+                if (msg == null) return true;
+                String message = msg.message();
+                String line = "[" + msg.lineNumber() + "] " + message;
+                ConsoleMessage.MessageLevel level = msg.messageLevel();
+                if (level == null) {
+                    LogUtil.d(TAG + ": console.debug " + line);
+                    return true;
+                }
+                switch (level) {
+                    case ERROR:
+                        LogUtil.e(TAG + ": console.error " + line);
+                        break;
+                    case WARNING:
+                        LogUtil.w(TAG + ": console.warn " + line);
+                        break;
+                    case LOG:
+                    case TIP:
+                        LogUtil.i(TAG + ": console.log " + line);
+                        break;
+                    case DEBUG:
+                    default:
+                        LogUtil.d(TAG + ": console.debug " + line);
+                        break;
+                }
+                return true;
+            }
+
+            @Override
+            public void onPermissionRequest(PermissionRequest request) {
+                LogUtil.i(TAG + ": onPermissionRequest: resources="
+                        + (request != null ? java.util.Arrays.toString(request.getResources()) : "null"));
+                if (request != null) {
+                    request.grant(request.getResources());
+                }
+            }
+        });
+
+        // X5 扩展: 视频全屏请求 / 媒体权限, 参考 WebViewTvLive 的 WebChromeClientExtension
+        wv.setWebViewClientExtension(new ProxyWebViewClientExtension() {
+        });
+
+        wv.setWebChromeClientExtension(new ProxyWebChromeClientExtension() {
+            @Override
+            public boolean onPermissionRequest(String origin, long resources,
+                    MediaAccessPermissionsCallback callback) {
+                LogUtil.i(TAG + ": ext onPermissionRequest: origin=" + origin
+                        + " resources=" + resources);
+                if (callback != null) {
+                    callback.invoke(origin, 0, true);
+                }
+                return true;
+            }
+
+            @Override
+            public void jsRequestFullScreen() {
+                LogUtil.i(TAG + ": ext jsRequestFullScreen");
+            }
+
+            @Override
+            public void h5videoRequestFullScreen(String url) {
+                LogUtil.i(TAG + ": ext h5videoRequestFullScreen: " + url);
+            }
         });
 
         applyUa(wv, false);
@@ -345,6 +436,21 @@ public class X5WebEngine implements WebEngine {
         UserAgentPreset preset = UserAgentPreset.fromId(mUaMode);
         wv.getSettings().setUserAgentString(preset.ua);
         LogUtil.i(TAG + ": UA -> " + preset.label);
+    }
+
+    private void applyPicModel(WebView wv, boolean noPic) {
+        if (wv == null) return;
+        try {
+            IX5WebSettingsExtension ext = wv.getSettingsExtension();
+            if (ext != null) {
+                ext.setPicModel(noPic
+                        ? IX5WebSettingsExtension.PicModel_NoPic
+                        : IX5WebSettingsExtension.PicModel_NORMAL);
+                LogUtil.d(TAG + ": PicModel -> " + (noPic ? "NoPic" : "NORMAL"));
+            }
+        } catch (Exception e) {
+            LogUtil.w(TAG + ": applyPicModel failed: " + e.getMessage());
+        }
     }
 
     private String getSoftModeJs(String url) {

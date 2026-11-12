@@ -23,6 +23,7 @@ import com.ysplayer.adapter.SettingGroupAdapter;
 import com.ysplayer.adapter.SettingItemAdapter;
 import com.ysplayer.bean.ChannelInfo;
 import com.ysplayer.bean.ChannelInfo.Route;
+import com.ysplayer.bean.MgtvChannel;
 import com.ysplayer.bean.SettingGroup;
 import com.ysplayer.bean.SettingItemInfo;
 
@@ -71,6 +72,7 @@ public class MainActivity extends AppCompatActivity {
     private String[] mDecodingModeLabels = new String[]{};
 
     private final List<ChannelInfo> allChannelList = new ArrayList<>();
+    private final List<MgtvChannel> mgtvChannels = new ArrayList<>();
     private int currentChannelIndex = -1;
     private Handler mainHandler;
 
@@ -112,6 +114,7 @@ public class MainActivity extends AppCompatActivity {
         initClickListeners();
         loadSettings();
         buildChannelList();
+        refreshMgtvChannels();
     }
 
     @Override
@@ -284,6 +287,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void buildChannelList() {
         allChannelList.clear();
+        mgtvChannels.clear();
+        mgtvChannels.addAll(MgtvChannelManager.loadChannels(this));
         buildChannelData();
         channelAdapter.setChannels(allChannelList, () -> {
             if (allChannelList.isEmpty()) return;
@@ -418,15 +423,9 @@ public class MainActivity extends AppCompatActivity {
         allChannelList.add(createChannel("重庆卫视", num++,
                 route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600002531")));
         allChannelList.add(createChannel("深圳卫视", num++,
-                route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600002481")));
-        allChannelList.add(createChannel("澳门莲花卫视", num++,
-                route("澳门莲花卫视", "https://www.lotustv.mo/live")));
+                route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600002481")));      
         allChannelList.add(createChannel("安徽卫视", num++,
                 route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600002532")));
-        allChannelList.add(createChannel("金鹰卡通", num++,
-                route("芒果TV", "https://www.mgtv.com/live/")));
-        allChannelList.add(createChannel("湖南卫视", num++,
-                route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600002475"))); 
         allChannelList.add(createChannel("河南卫视", num++,
                 route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600002525")));
         allChannelList.add(createChannel("辽宁卫视", num++,
@@ -440,7 +439,19 @@ public class MainActivity extends AppCompatActivity {
         allChannelList.add(createChannel("甘肃卫视", num++,
                 route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600190408")));
         allChannelList.add(createChannel("青海卫视", num++,
-                route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600190406")));    
+                route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600190406")));  
+
+        // 湖南（芒果TV 线路：动态远程 JSON，内置列表兜底）
+        for (MgtvChannel c : mgtvChannels) {
+            if ("湖南卫视".equals(c.getName())) {
+                allChannelList.add(createChannel(c.getName(), num++,
+                        route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600002475"),
+                        route("芒果TV", MgtvChannelManager.liveUrl(c))));
+            } else {
+                allChannelList.add(createChannel(c.getName(), num++,
+                        route("芒果TV", MgtvChannelManager.liveUrl(c))));
+            }
+        }
 
         // 山西
         allChannelList.add(createChannel("山西卫视", num++,
@@ -587,6 +598,12 @@ public class MainActivity extends AppCompatActivity {
         allChannelList.add(createChannel("GRTN生活", num++,
                 route("荔枝网", "https://gdtv.cn/tvChannelDetail/102")));
 
+        // 香港 / 澳门
+        allChannelList.add(createChannel("香港卫视", num++,
+                route("香港卫视官网", "https://www.hkstv.tv/live")));
+        allChannelList.add(createChannel("澳门莲花卫视", num++,
+                route("莲花卫视官网", "https://www.lotustv.mo/")));
+
         // 江西        
         allChannelList.add(createChannel("江西卫视", num++,
                 route("江西网络广播电视台", "https://www.jxntv.cn/live/#/jxtv1"),
@@ -623,7 +640,7 @@ public class MainActivity extends AppCompatActivity {
 
         // 福建
         allChannelList.add(createChannel("东南卫视", num++,
-                route("福建网络广播电视台", "https://live.fjtv.net/dnpd/"),
+                route("福建网络广播电视台", "https://live.fjtv.net/setv/"),
                 route("央视频网页", "https://www.yangshipin.cn/tv/home?pid=600002484")));
         allChannelList.add(createChannel("福建综合", num++,
                 route("福建网络广播电视台", "https://live.fjtv.net/zhpd/")));
@@ -787,6 +804,42 @@ public class MainActivity extends AppCompatActivity {
 
     private static Route route(String name, String url) {
         return new Route(name, url);
+    }
+
+    private void refreshMgtvChannels() {
+        MgtvChannelManager.refreshAsync(this, false, newList -> {
+            if (newList == null) return;
+            mainHandler.post(() -> applyMgtvChannels(newList));
+        });
+    }
+
+    private void applyMgtvChannels(List<MgtvChannel> newList) {
+        if (newList == null || newList.isEmpty()) return;
+        if (newList.equals(mgtvChannels)) return;
+        String currentName = getCurrentChannelName();
+        mgtvChannels.clear();
+        mgtvChannels.addAll(newList);
+        allChannelList.clear();
+        buildChannelData();
+        loadRoutePreferences();
+        channelAdapter.setChannels(allChannelList, () -> {
+            if (currentName == null) return;
+            for (int i = 0; i < allChannelList.size(); i++) {
+                if (allChannelList.get(i).getName().equals(currentName)) {
+                    currentChannelIndex = i;
+                    channelAdapter.setSelectedPosition(i);
+                    updateBottomInfoBar();
+                    break;
+                }
+            }
+        });
+    }
+
+    private String getCurrentChannelName() {
+        if (currentChannelIndex >= 0 && currentChannelIndex < allChannelList.size()) {
+            return allChannelList.get(currentChannelIndex).getName();
+        }
+        return null;
     }
 
     // ==================== 频道切换 ====================
